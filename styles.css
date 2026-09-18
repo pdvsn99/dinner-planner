@@ -146,6 +146,10 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 
 /* ---------- week list (day cards) ---------- */
 .week-list { display: grid; gap: 12px; margin-bottom: 24px; }
+/* Use the extra room on wider screens: two days side by side. */
+@media (min-width: 720px) {
+  .week-list { grid-template-columns: 1fr 1fr; }
+}
 
 .day-card {
   background: var(--bg-soft);
@@ -153,7 +157,10 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
+.day-card > .cell { flex: 1 1 auto; } /* meal area fills the card so paired columns align */
 .day-card.is-today { border-color: var(--brand); }
 
 .day-card-head {
