@@ -17,7 +17,9 @@ const DAYS = [
   { key: "sat",   label: "Saturday" },
   { key: "sun",   label: "Sunday" },
 ];
-const SLOTS = ["Lunch", "Dinner"];
+// Lunch was removed — the planner now plans one dinner per day.
+// We keep a single "Dinner" slot so stored plan entries stay consistent.
+const SLOTS = ["Dinner"];
 
 /* ---------- state ---------- */
 let USER_ID = null;
@@ -76,8 +78,9 @@ function weekTitle() {
 
 /* ---------- meal rules ---------- */
 function candidates(slot, dayKey, { treat } = { treat: false }) {
+  // No more Lunch/Dinner split — every meal is a candidate, subject only to
+  // whether it's a treat (takeaway / eating out) and which days it's allowed on.
   return MEALS.filter((m) => {
-    if (m.category !== slot) return false;
     const isTreat = m.location !== "Home";
     if (treat !== isTreat) return false;
     return (m.days || []).includes(dayKey);
@@ -268,7 +271,7 @@ async function treatWeek() {
     SLOTS.forEach((slot) => {
       if (!eligible(d.key, slot)) return;
       let pool = candidates(slot, d.key, { treat: true });
-      if (pool.length === 0) pool = MEALS.filter((m) => m.category === slot && m.location !== "Home");
+      if (pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
       if (pool.length === 0) pool = candidates(slot, d.key, { treat: false });
       if (pool.length) updates.push({ day: d.key, slot, entry: makeEntry(rand(pool)) });
     });
@@ -279,7 +282,7 @@ async function treatWeek() {
 
 async function fillCell(dayKey, slot, { treat }) {
   let pool = candidates(slot, dayKey, { treat });
-  if (treat && pool.length === 0) pool = MEALS.filter((m) => m.category === slot && m.location !== "Home");
+  if (treat && pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
   if (pool.length === 0) { flash("No matching meals — add some in the Meals tab."); return; }
   await saveEntry(dayKey, slot, makeEntry(rand(pool)));
   render();
@@ -347,92 +350,93 @@ function render() {
 function renderWeekNav() { $("week-title").textContent = weekTitle(); }
 
 function renderGrid() {
-  const tbody = $("grid-body");
-  tbody.innerHTML = "";
+  const list = $("grid-body");
+  list.innerHTML = "";
+  const slot = SLOTS[0]; // only "Dinner" now
+  const todayIso = isoDate(new Date());
+
   DAYS.forEach((d) => {
-    const tr = document.createElement("tr");
     const dayOut = plan.days[d.key] && plan.days[d.key].is_out;
 
-    // Day header
-    const th = document.createElement("th");
-    th.className = "day";
-    const dateStr = dateForDay(d.key).toLocaleDateString("en-GB", { day: "numeric" });
-    th.innerHTML = `<span class="day-name">${d.label}</span><span class="day-date">${dateStr}</span>`;
+    const card = document.createElement("div");
+    card.className = "day-card";
+    if (isoDate(dateForDay(d.key)) === todayIso) card.classList.add("is-today");
+
+    // --- header: day name + date, plus the "mark out" toggle ---
+    const head = document.createElement("div");
+    head.className = "day-card-head";
+    const dateStr = dateForDay(d.key).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    head.innerHTML = `<span class="day-when"><span class="day-name">${d.label}</span><span class="day-date">${dateStr}</span></span>`;
     const outBtn = document.createElement("button");
     outBtn.className = "day-out-btn";
     outBtn.type = "button";
     outBtn.title = dayOut ? "Bring this day back into the planner" : "Mark this day out (away / eating out)";
-    outBtn.textContent = dayOut ? "↩" : "⋯";
+    outBtn.setAttribute("aria-label", outBtn.title);
+    outBtn.textContent = dayOut ? "↩ Back in" : "⋯";
     outBtn.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
-    th.appendChild(outBtn);
-    tr.appendChild(th);
+    head.appendChild(outBtn);
+    card.appendChild(head);
+
+    // --- body: the dinner ---
+    const cell = document.createElement("div");
+    cell.className = "cell day-meal";
 
     if (dayOut) {
-      const td = document.createElement("td");
-      td.className = "cell cell-out day-out";
-      td.colSpan = 2;
       const note = plan.days[d.key].note;
-      td.innerHTML = `<span class="out-label">🚫 Out of the planner</span>${note ? `<span class="out-note">${escapeHtml(note)}</span>` : ""}`;
-      tr.appendChild(td);
-      tbody.appendChild(tr);
+      cell.classList.add("cell-out", "day-out");
+      cell.innerHTML = `<span class="out-label">🚫 Out of the planner</span>${note ? `<span class="out-note">${escapeHtml(note)}</span>` : ""}`;
+      card.appendChild(cell);
+      list.appendChild(card);
       return;
     }
 
-    SLOTS.forEach((slot) => {
-      const td = document.createElement("td");
-      td.className = "cell";
-      const st = cellState(d.key, slot);
-      const meal = st.entry && st.entry.meal_name ? mealByName(st.entry.meal_name) : null;
-      const isTreat = meal && meal.location !== "Home";
-      if (isTreat) td.classList.add("is-treat");
-      if (st.out) td.classList.add("cell-out");
-      if (selected && selected.day === d.key && selected.slot === slot) td.classList.add("is-selected");
+    const st = cellState(d.key, slot);
+    const meal = st.entry && st.entry.meal_name ? mealByName(st.entry.meal_name) : null;
+    const isTreat = meal && meal.location !== "Home";
+    if (isTreat) cell.classList.add("is-treat");
+    if (st.out) cell.classList.add("cell-out");
+    if (selected && selected.day === d.key && selected.slot === slot) cell.classList.add("is-selected");
 
-      const inner = document.createElement("div");
-      inner.className = "cell-inner";
-      const body = document.createElement("div");
-      body.className = "cell-body";
-
-      if (st.out) {
-        body.innerHTML = `<span class="out-label">🚫 Out</span>${st.note ? `<span class="out-note">${escapeHtml(st.note)}</span>` : ""}`;
-      } else if (st.entry && st.entry.meal_name) {
-        const txt = document.createElement("span");
-        txt.className = "cell-text";
-        txt.textContent = entryText(st.entry);
-        body.appendChild(txt);
-        if (isTreat) {
-          const tag = document.createElement("span");
-          tag.className = "badge";
-          tag.textContent = meal.location === "Takeaway" ? "Takeaway" : "Eating out";
-          body.appendChild(tag);
-        }
-      } else {
-        td.classList.add("empty");
-        body.innerHTML = '<span class="cell-text muted">＋ add a meal</span>';
+    const body = document.createElement("div");
+    body.className = "cell-body";
+    if (st.out) {
+      body.innerHTML = `<span class="out-label">🚫 Out</span>${st.note ? `<span class="out-note">${escapeHtml(st.note)}</span>` : ""}`;
+    } else if (st.entry && st.entry.meal_name) {
+      const txt = document.createElement("span");
+      txt.className = "cell-text";
+      txt.textContent = entryText(st.entry);
+      body.appendChild(txt);
+      if (isTreat) {
+        const tag = document.createElement("span");
+        tag.className = "badge";
+        tag.textContent = meal.location === "Takeaway" ? "Takeaway" : "Eating out";
+        body.appendChild(tag);
       }
-      inner.appendChild(body);
+    } else {
+      cell.classList.add("empty");
+      body.innerHTML = '<span class="cell-text muted">＋ add a meal</span>';
+    }
+    cell.appendChild(body);
 
-      const edit = document.createElement("button");
-      edit.className = "cell-edit";
-      edit.type = "button";
-      edit.setAttribute("aria-label", `Choose ${d.label} ${slot}`);
-      edit.textContent = "✏️";
-      edit.addEventListener("click", (ev) => { ev.stopPropagation(); selected = { day: d.key, slot }; openPicker(d.key, slot); });
-      inner.appendChild(edit);
-      td.appendChild(inner);
+    const edit = document.createElement("button");
+    edit.className = "cell-edit";
+    edit.type = "button";
+    edit.setAttribute("aria-label", `Choose ${d.label} dinner`);
+    edit.textContent = "✏️";
+    edit.addEventListener("click", (ev) => { ev.stopPropagation(); selected = { day: d.key, slot }; openPicker(d.key, slot); });
+    cell.appendChild(edit);
 
-      td.addEventListener("click", () => { selected = { day: d.key, slot }; render(); });
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
+    cell.addEventListener("click", () => { selected = { day: d.key, slot }; render(); });
+    card.appendChild(cell);
+    list.appendChild(card);
   });
 
   const hint = $("selection-hint");
   if (selected) {
     const dayLabel = DAYS.find((x) => x.key === selected.day).label;
-    hint.textContent = `Selected: ${dayLabel} ${selected.slot}`;
+    hint.textContent = `Selected: ${dayLabel}. Now use Swap, Treat or Edit above.`;
   } else {
-    hint.textContent = "Tap a meal to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).";
+    hint.textContent = "Tap a day to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).";
   }
 }
 
@@ -479,12 +483,12 @@ function addOptGroup(sel, label, meals) {
 function openPicker(dayKey, slot) {
   picking = { day: dayKey, slot };
   const dayLabel = DAYS.find((x) => x.key === dayKey).label;
-  $("modal-title").textContent = `${dayLabel} · ${slot}`;
+  $("modal-title").textContent = `${dayLabel} dinner`;
   const sel = $("pick-meal");
   sel.innerHTML = "";
   sel.appendChild(new Option("— choose a meal —", ""));
-  addOptGroup(sel, "Home meals", MEALS.filter((m) => m.category === slot && m.location === "Home").sort(byName));
-  addOptGroup(sel, "Treats (takeaway / eating out)", MEALS.filter((m) => m.category === slot && m.location !== "Home").sort(byName));
+  addOptGroup(sel, "Home meals", MEALS.filter((m) => m.location === "Home").sort(byName));
+  addOptGroup(sel, "Treats (takeaway / eating out)", MEALS.filter((m) => m.location !== "Home").sort(byName));
   const cur = plan.entries[ekey(dayKey, slot)];
   const curName = cur && cur.status !== "out" ? cur.meal_name : "";
   sel.value = curName || "";
@@ -553,7 +557,6 @@ function openMealEditor(meal) {
   editingMealId = meal ? meal.id : null;
   $("meal-modal-title").textContent = meal ? "Edit meal" : "Add meal";
   $("m-name").value = meal ? meal.name : "";
-  $("m-category").value = meal ? meal.category : "Dinner";
   $("m-location").value = meal ? meal.location : "Home";
   $("m-sides").value = meal ? (meal.sides || []).join(", ") : "";
   $("m-min").value = meal ? meal.min_sides : 0;
@@ -576,7 +579,7 @@ async function saveMeal() {
   if (max < min) max = min;
   const row = {
     name,
-    category: $("m-category").value,
+    category: "Dinner", // kept for the database column; lunch no longer exists
     location: $("m-location").value,
     sides: splitList($("m-sides").value),
     min_sides: min,
@@ -616,10 +619,13 @@ function renderMealsList() {
     row.className = "meal-row";
     row.type = "button";
     const treat = m.location !== "Home";
+    const bits = [];
+    if (treat) bits.push(escapeHtml(m.location));
+    else bits.push("Home");
+    if (m.sides && m.sides.length) bits.push(m.sides.length + " side" + (m.sides.length === 1 ? "" : "s"));
     row.innerHTML =
       `<span class="meal-row-main"><span class="meal-row-name">${escapeHtml(m.name)}</span>` +
-      `<span class="meal-row-sub">${escapeHtml(m.category)}${treat ? " · " + escapeHtml(m.location) : ""}` +
-      `${(m.sides && m.sides.length) ? " · " + m.sides.length + " sides" : ""}</span></span>` +
+      `<span class="meal-row-sub">${bits.join(" · ")}</span></span>` +
       `<span class="meal-row-edit">✏️</span>`;
     row.addEventListener("click", () => openMealEditor(m));
     box.appendChild(row);

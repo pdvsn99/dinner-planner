@@ -1,6 +1,6 @@
 # 🍽️ Dinner Planner
 
-A web app for planning the week's lunches and dinners. Roll the dice on
+A web app for planning the week's dinners. Roll the dice on
 meals, treat yourself, mark days you're out, and get an automatic shopping
 list. Your meals and plans are saved to your own private account in the
 cloud (Supabase), so they're there on every device you log in on.
@@ -9,7 +9,7 @@ cloud (Supabase), so they're there on every device you log in on.
 
 | Thing | What it does |
 | --- | --- |
-| 🎲 **Generate week** | Fills every empty lunch & dinner with a random *home* meal, only using meals allowed on that day, and picks sides at random. Skips days/meals you've marked out. |
+| 🎲 **Generate week** | Fills every empty dinner with a random *home* meal, only using meals allowed on that day, and picks sides at random. Skips days you've marked out. |
 | 🔀 **Swap selected** | Tap a meal, then re-roll just that one. |
 | ✨ **Treat selected / Treat the week!** | Swap a meal (or the whole week) for takeaways / eating out. |
 | ✏️ **Edit selected / the pencil** | Choose an exact meal and tick the sides you want. |

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dinner Planner</title>
-  <meta name="description" content="Plan the week's lunches and dinners, roll the dice on meals, treat yourself, mark days out, and get an automatic shopping list." />
+  <meta name="description" content="Plan the week's dinners, roll the dice on meals, treat yourself, mark days out, and get an automatic shopping list." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -74,16 +74,9 @@
         <button id="btn-print" class="btn btn-ghost">🖨️ Print</button>
         <button id="btn-clear" class="btn btn-ghost">🧹 Clear</button>
       </div>
-      <p id="selection-hint" class="hint">Tap a meal to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).</p>
+      <p id="selection-hint" class="hint">Tap a day to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).</p>
 
-      <div class="card">
-        <table class="week" aria-label="Weekly meal plan">
-          <thead>
-            <tr><th class="corner"></th><th>Lunch</th><th>Dinner</th></tr>
-          </thead>
-          <tbody id="grid-body"></tbody>
-        </table>
-      </div>
+      <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
 
       <div class="card shopping">
         <div class="shopping-head">
@@ -147,23 +140,12 @@
         <label class="field-label" for="m-name">Name</label>
         <input id="m-name" class="select" type="text" placeholder="e.g. Meatballs" />
 
-        <div class="grid-2">
-          <div>
-            <label class="field-label" for="m-category">Type</label>
-            <select id="m-category" class="select">
-              <option value="Dinner">Dinner</option>
-              <option value="Lunch">Lunch</option>
-            </select>
-          </div>
-          <div>
-            <label class="field-label" for="m-location">Where</label>
-            <select id="m-location" class="select">
-              <option value="Home">Home (cooked)</option>
-              <option value="Takeaway">Takeaway (treat)</option>
-              <option value="Eating Out">Eating Out (treat)</option>
-            </select>
-          </div>
-        </div>
+        <label class="field-label" for="m-location">Where</label>
+        <select id="m-location" class="select">
+          <option value="Home">Home (cooked)</option>
+          <option value="Takeaway">Takeaway (treat)</option>
+          <option value="Eating Out">Eating Out (treat)</option>
+        </select>
 
         <label class="field-label" for="m-sides">Sides it can have <span class="hint-inline">(comma separated)</span></label>
         <input id="m-sides" class="select" type="text" placeholder="mash, gravy, peas, wedges" />

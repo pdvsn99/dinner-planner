@@ -57,15 +57,15 @@ body {
 .site-header {
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%);
   color: #fff;
-  padding: 28px 0;
+  padding: 20px 0;
   box-shadow: var(--shadow);
 }
-.header-inner { display: flex; align-items: center; }
-.brand { display: flex; align-items: center; gap: 14px; }
+.header-inner { display: flex; align-items: center; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .brand-mark {
-  font-size: 34px;
+  font-size: 30px;
   background: rgba(255,255,255,.18);
-  width: 58px; height: 58px;
+  width: 52px; height: 52px;
   display: grid; place-items: center;
   border-radius: 14px;
   flex: none;
@@ -144,47 +144,47 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
   margin-bottom: 24px;
 }
 
-/* ---------- week table ---------- */
-.week {
-  width: 100%;
-  border-collapse: collapse;
-}
-.week thead th {
-  background: var(--brand-tint);
-  color: var(--brand-dark);
-  font-family: "Fraunces", serif;
-  font-weight: 600;
-  font-size: 1.05rem;
-  text-align: left;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--line);
-}
-.week thead th.corner { width: 90px; background: var(--brand-tint); }
+/* ---------- week list (day cards) ---------- */
+.week-list { display: grid; gap: 12px; margin-bottom: 24px; }
 
-.week tbody th.day {
-  text-align: left;
-  padding: 14px 18px;
-  font-weight: 700;
-  color: var(--ink);
+.day-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.day-card.is-today { border-color: var(--brand); }
+
+.day-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
   background: var(--brand-tint);
   border-bottom: 1px solid var(--line);
-  border-right: 1px solid var(--line);
-  white-space: nowrap;
-  vertical-align: middle;
 }
-.week tbody tr:last-child th,
-.week tbody tr:last-child td { border-bottom: none; }
+.day-when { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.day-name {
+  font-family: "Fraunces", serif;
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+.day-card.is-today .day-name { color: var(--brand-dark); }
+.day-date { font-size: .82rem; color: var(--ink-soft); font-weight: 500; }
 
 .cell {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
-  border-right: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  min-height: 58px;
   cursor: pointer;
-  vertical-align: middle;
   transition: background .12s ease;
   position: relative;
 }
-.cell:last-child { border-right: none; }
 .cell:hover { background: var(--brand-tint); }
 .cell.empty { color: var(--ink-soft); }
 .cell.is-treat { background: var(--treat-tint); }
@@ -193,6 +193,13 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
   box-shadow: inset 0 0 0 2px var(--brand);
   background: var(--brand-tint);
 }
+.cell.day-out {
+  flex-direction: column;
+  align-items: flex-start;
+  cursor: default;
+  gap: 2px;
+}
+.cell.day-out:hover { background: transparent; }
 .cell-text { font-weight: 500; }
 .cell-text.muted { color: var(--ink-soft); }
 
@@ -260,7 +267,6 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 }
 
 /* ---------- cell layout + pencil ---------- */
-.cell-inner { display: flex; align-items: center; gap: 8px; }
 .cell-body { flex: 1 1 auto; min-width: 0; }
 .cell-edit {
   flex: none;
@@ -419,11 +425,24 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 560px) {
-  .week thead th.corner { width: 58px; }
-  .week thead th, .week tbody th.day, .cell { padding: 10px 10px; }
-  .week { font-size: .92rem; }
+  .site-header { padding: 16px 0; }
+  .brand { gap: 10px; }
+  .brand-mark { width: 44px; height: 44px; font-size: 24px; }
+  .site-header h1 { font-size: 1.4rem; }
+  .tagline { font-size: .82rem; }
+  .account-email { display: none; }
+
+  .controls { gap: 8px; }
   .btn { flex: 1 1 auto; text-align: center; }
   .spacer { display: none; }
+
+  .day-card-head { padding: 11px 14px; }
+  .cell { padding: 13px 14px; }
+}
+
+/* On very small phones, let the primary actions sit two-per-row cleanly. */
+@media (max-width: 380px) {
+  .btn { font-size: .9rem; padding: 10px 12px; }
 }
 
 /* ---------- print ---------- */
@@ -443,8 +462,12 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 
 /* account bar in header */
 .header-inner { justify-content: space-between; }
-.account { display: flex; align-items: center; gap: 10px; color: #fff; }
-.account-email { font-size: .85rem; opacity: .9; }
+.account { display: flex; align-items: center; gap: 10px; color: #fff; min-width: 0; flex: none; }
+.account-email {
+  font-size: .85rem; opacity: .9;
+  max-width: 42vw;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .btn-sm { padding: 6px 12px; font-size: .85rem; }
 .site-header .btn-ghost { color: #fff; border: 1px solid rgba(255,255,255,.5); }
 .site-header .btn-ghost:hover { background: rgba(255,255,255,.15); }
@@ -474,20 +497,19 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 .week-label strong { font-family: "Fraunces", serif; font-size: 1.15rem; display: block; color: var(--ink); }
 .link-btn { background: none; border: none; color: var(--brand-dark); cursor: pointer; font: inherit; font-size: .82rem; text-decoration: underline; padding: 2px; }
 
-/* day header with date + out button */
-.week tbody th.day { position: relative; }
-.day-name { display: block; }
-.day-date { display: block; font-weight: 500; font-size: .78rem; color: var(--ink-soft); }
+/* day "mark out" toggle */
 .day-out-btn {
-  position: absolute; top: 6px; right: 6px;
-  border: none; background: transparent; cursor: pointer;
-  font-size: .95rem; line-height: 1; padding: 4px 6px; border-radius: 8px; color: var(--ink-soft);
+  flex: none;
+  border: 1px solid transparent; background: transparent; cursor: pointer;
+  font: inherit; font-weight: 600; font-size: .85rem; line-height: 1;
+  padding: 8px 12px; border-radius: 999px; color: var(--ink-soft);
 }
 .day-out-btn:hover { background: var(--bg-soft); color: var(--ink); }
+.day-out-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 
 /* out-of-planner cells */
 .cell-out { background: repeating-linear-gradient(45deg, transparent, transparent 8px, rgba(0,0,0,.03) 8px, rgba(0,0,0,.03) 16px); }
-.cell-out.day-out { text-align: center; color: var(--ink-soft); }
+.cell-out.day-out { color: var(--ink-soft); }
 .out-label { font-weight: 600; color: var(--ink-soft); }
 .out-note { display: block; font-size: .82rem; color: var(--ink-soft); font-style: italic; margin-top: 2px; }
 
