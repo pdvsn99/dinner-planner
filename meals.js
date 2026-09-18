@@ -1,28 +1,17 @@
 /*
  * ============================================================
- *  YOUR MEAL LIST  —  this is the only file you need to edit
+ *  STARTER MEALS  (seed data)
  * ============================================================
  *
- *  Each meal is one block between the { } braces. Copy an
- *  existing block, paste it, and change the words in quotes to
- *  add your own. Keep the commas exactly where they are.
+ *  Your meals now live in the database, and you edit them from
+ *  the "Meals" tab inside the app — no need to touch this file.
  *
- *  What each line means:
- *    name         the meal name, e.g. "Meatballs"
- *    category     "Lunch" or "Dinner"
- *    location     "Home" (cooked in) OR "Takeaway"/"Eating Out" (a treat)
- *    ease         "Easy", "Medium" or "Hard" (just a label)
- *    sides        the side dishes it CAN have, in [ ] and quotes
- *    min / max    how many sides to pick (e.g. min 2 max 4)
- *    days         which days it is allowed on
- *                 use: mon tue wed thurs fri sat sun
- *    ingredients  what goes on the shopping list for it
- *
- *  After editing: save the file, commit & push (or drag the
- *  folder to Netlify again) and the site updates.
+ *  This list is only used ONCE: the first time a new account
+ *  signs in, these meals are copied into that account so you
+ *  start with something instead of a blank page.
  */
 
-const MEALS = [
+window.DEFAULT_MEALS = [
   {
     name: "Meatballs",
     category: "Dinner",
