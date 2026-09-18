@@ -31,11 +31,12 @@
       <button id="btn-swap" class="btn">🔀 Swap selected</button>
       <button id="btn-treat-cell" class="btn btn-treat">✨ Treat selected</button>
       <button id="btn-treat-week" class="btn btn-treat">🎉 Treat the week!</button>
+      <button id="btn-edit" class="btn">✏️ Edit selected</button>
       <span class="spacer"></span>
       <button id="btn-print" class="btn btn-ghost">🖨️ Print</button>
       <button id="btn-clear" class="btn btn-ghost">🧹 Clear</button>
     </section>
-    <p id="selection-hint" class="hint">No meal selected — tap one to swap or treat it.</p>
+    <p id="selection-hint" class="hint">Tap a meal to select it (then Swap / Treat), or tap its ✏️ to choose exactly what you want.</p>
 
     <!-- Week grid -->
     <section class="card">
@@ -64,6 +65,37 @@
       <p>Everything is saved on this device automatically. Edit your meals in <code>meals.js</code>.</p>
     </footer>
   </main>
+
+  <!-- Meal picker -->
+  <div id="modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h2 id="modal-title">Choose a meal</h2>
+        <button id="modal-close" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <label class="field-label" for="pick-meal">Meal</label>
+        <select id="pick-meal" class="select"></select>
+
+        <div id="pick-sides-wrap" class="sides-wrap">
+          <div class="field-label">Sides <span id="pick-hint" class="hint-inline"></span></div>
+          <div id="pick-sides" class="sides"></div>
+        </div>
+
+        <div class="quick-row">
+          <button id="pick-random" class="btn btn-ghost">🎲 Random</button>
+          <button id="pick-treat" class="btn btn-ghost">✨ Treat</button>
+          <button id="pick-clear" class="btn btn-ghost">🧹 Clear this cell</button>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <button id="pick-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="pick-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 

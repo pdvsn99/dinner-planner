@@ -183,21 +183,40 @@ function renderGrid() {
       if (isTreat) td.classList.add("is-treat");
       if (selected && selected.day === d.key && selected.slot === slot) td.classList.add("is-selected");
 
+      const inner = document.createElement("div");
+      inner.className = "cell-inner";
+      const body = document.createElement("div");
+      body.className = "cell-body";
       if (entry) {
         const txt = document.createElement("span");
         txt.className = "cell-text";
         txt.textContent = entryText(entry);
-        td.appendChild(txt);
+        body.appendChild(txt);
         if (isTreat) {
           const tag = document.createElement("span");
           tag.className = "badge";
           tag.textContent = meal.location === "Takeaway" ? "Takeaway" : "Eating out";
-          td.appendChild(tag);
+          body.appendChild(tag);
         }
       } else {
         td.classList.add("empty");
-        td.innerHTML = '<span class="cell-text muted">—</span>';
+        body.innerHTML = '<span class="cell-text muted">＋ add a meal</span>';
       }
+      inner.appendChild(body);
+
+      // Pencil — opens the picker for exactly this cell.
+      const edit = document.createElement("button");
+      edit.className = "cell-edit";
+      edit.type = "button";
+      edit.setAttribute("aria-label", `Choose ${d.label} ${slot}`);
+      edit.textContent = "✏️";
+      edit.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        selected = { day: d.key, slot };
+        openEditor(d.key, slot);
+      });
+      inner.appendChild(edit);
+      td.appendChild(inner);
 
       td.addEventListener("click", () => {
         selected = { day: d.key, slot };
@@ -238,6 +257,125 @@ function renderShopping() {
       <span class="shop-meal">${[...it.meals].join(", ")}</span>`;
     box.appendChild(row);
   });
+}
+
+/* ---------- meal picker (manual choose) ---------- */
+
+let editing = null; // { day, slot }
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+function addOptGroup(sel, label, meals) {
+  if (!meals.length) return;
+  const g = document.createElement("optgroup");
+  g.label = label;
+  meals.forEach((m) => g.appendChild(new Option(m.name, m.name)));
+  sel.appendChild(g);
+}
+
+function openEditor(dayKey, slot) {
+  editing = { day: dayKey, slot };
+  const dayLabel = DAYS.find((x) => x.key === dayKey).label;
+  document.getElementById("modal-title").textContent = `${dayLabel} · ${slot}`;
+
+  const sel = document.getElementById("pick-meal");
+  sel.innerHTML = "";
+  sel.appendChild(new Option("— choose a meal —", ""));
+  const home = MEALS.filter((m) => m.category === slot && m.location === "Home").sort(byName);
+  const treat = MEALS.filter((m) => m.category === slot && m.location !== "Home").sort(byName);
+  addOptGroup(sel, "Home meals", home);
+  addOptGroup(sel, "Treats (takeaway / eating out)", treat);
+
+  const current = week[dayKey][slot];
+  sel.value = current ? current.name : "";
+  renderSideChoices(sel.value, current ? current.sides : []);
+
+  document.getElementById("modal").hidden = false;
+  sel.focus();
+}
+
+function closeEditor() {
+  document.getElementById("modal").hidden = true;
+  editing = null;
+}
+
+function renderSideChoices(mealName, chosen) {
+  const wrap = document.getElementById("pick-sides-wrap");
+  const box = document.getElementById("pick-sides");
+  const hint = document.getElementById("pick-hint");
+  box.innerHTML = "";
+  const meal = mealByName(mealName);
+  if (!meal || !meal.sides.length) {
+    wrap.style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
+  hint.textContent = meal.min === meal.max
+    ? (meal.max === 0 ? "" : `(usually ${meal.max})`)
+    : `(usually ${meal.min}–${meal.max})`;
+  const chosenSet = new Set(chosen || []);
+  meal.sides.forEach((s) => {
+    const id = "side-" + s.replace(/\W+/g, "-");
+    const label = document.createElement("label");
+    label.className = "side-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = s;
+    cb.id = id;
+    if (chosenSet.has(s)) cb.checked = true;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(" " + s));
+    box.appendChild(label);
+  });
+}
+
+function saveEditor() {
+  if (!editing) return;
+  const name = document.getElementById("pick-meal").value;
+  if (!name) {
+    flash("Pick a meal, or use 'Clear this cell'.");
+    return;
+  }
+  const chosen = [...document.querySelectorAll("#pick-sides input:checked")].map((c) => c.value);
+  week[editing.day][editing.slot] = { name, sides: chosen };
+  save();
+  render();
+  closeEditor();
+}
+
+function initPicker() {
+  document.getElementById("pick-meal").addEventListener("change", (e) => {
+    renderSideChoices(e.target.value, []);
+  });
+  document.getElementById("pick-save").addEventListener("click", saveEditor);
+  document.getElementById("pick-cancel").addEventListener("click", closeEditor);
+  document.getElementById("modal-close").addEventListener("click", closeEditor);
+  document.getElementById("modal").addEventListener("click", (e) => {
+    if (e.target.id === "modal") closeEditor(); // click backdrop
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !document.getElementById("modal").hidden) closeEditor();
+  });
+  // Quick actions inside the picker apply immediately and close.
+  document.getElementById("pick-random").addEventListener("click", () => {
+    if (!editing) return;
+    fillCell(editing.day, editing.slot, { treat: false });
+    save(); render(); closeEditor();
+  });
+  document.getElementById("pick-treat").addEventListener("click", () => {
+    if (!editing) return;
+    fillCell(editing.day, editing.slot, { treat: true });
+    save(); render(); closeEditor();
+  });
+  document.getElementById("pick-clear").addEventListener("click", () => {
+    if (!editing) return;
+    week[editing.day][editing.slot] = null;
+    save(); render(); closeEditor();
+  });
+}
+
+function editSelected() {
+  if (!requireSelection()) return;
+  openEditor(selected.day, selected.slot);
 }
 
 function flash(msg) {
@@ -287,7 +425,9 @@ function init() {
   document.getElementById("btn-swap").addEventListener("click", swapSelected);
   document.getElementById("btn-treat-cell").addEventListener("click", treatSelected);
   document.getElementById("btn-treat-week").addEventListener("click", treatWeek);
+  document.getElementById("btn-edit").addEventListener("click", editSelected);
   document.getElementById("btn-clear").addEventListener("click", clearWeek);
+  initPicker();
   document.getElementById("btn-print").addEventListener("click", () => window.print());
   render();
 }
