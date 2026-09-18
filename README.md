@@ -46,24 +46,22 @@ need to connect and configure them.
 1. Go to **[app.netlify.com](https://app.netlify.com)** → sign in with GitHub.
 2. **Add new site → Import an existing project → GitHub → `dinner-planner`**.
 3. Leave the defaults (publish directory `.`, no build command) → **Deploy**.
-4. You'll get a live web address like `https://YOUR-NAME.netlify.app`.
-   **Copy it — you need it in the next step.**
+4. The site is served at **`https://dinner.pdvsn.com`**.
 
 ### 2. Tell Supabase your web address (so login links work) ⚠️ important
 
 Login sends you an email with a link. Supabase will only allow that link to
-return to web addresses you've approved, so you must add your Netlify one:
+return to web addresses you've approved, so the site's address must be added:
 
 1. Go to **[supabase.com/dashboard](https://supabase.com/dashboard)** and open
    the **dinner-planner** project.
 2. Left menu: **Authentication → URL Configuration**.
-3. Set **Site URL** to your Netlify address (e.g. `https://YOUR-NAME.netlify.app`).
-4. Under **Redirect URLs**, click **Add URL** and add the same address with
-   `/**` on the end: `https://YOUR-NAME.netlify.app/**`.
+3. Set **Site URL** to `https://dinner.pdvsn.com`.
+4. Under **Redirect URLs**, click **Add URL** and add `https://dinner.pdvsn.com/**`.
 5. **Save.**
 
-That's it. Open your Netlify address, enter your email, click the link in
-the email, and you're in. Anyone you want to share it with just visits the
+That's it. Open **https://dinner.pdvsn.com**, enter your email, click the link
+in the email, and you're in. Anyone you want to share it with just visits the
 same address and signs in with *their* email — everyone gets their own
 private meals and plans.
 
