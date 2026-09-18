@@ -61,9 +61,15 @@ return to web addresses you've approved, so the site's address must be added:
 5. **Save.**
 
 That's it. Open **https://dinner.pdvsn.com**, enter your email, click the link
-in the email, and you're in. Anyone you want to share it with just visits the
-same address and signs in with *their* email — everyone gets their own
-private meals and plans.
+in the email, and you're in.
+
+### Sharing (household)
+
+This planner is set up as a **shared household**: everyone in the household
+sees and edits the *same* meals and weekly plans. Two people are already in
+it — `mrpauldavidson99@gmail.com` and `taylorwatson785@gmail.com` — so each
+just signs in with their own email at the same address and lands in the same
+planner. (Adding more people, or a view-only role, is a small future change.)
 
 > **Free-tier note:** Supabase's built-in email sender is limited to a few
 > messages per hour — fine for a household. If you ever want nicer/faster

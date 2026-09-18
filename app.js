@@ -21,6 +21,8 @@ const SLOTS = ["Lunch", "Dinner"];
 
 /* ---------- state ---------- */
 let USER_ID = null;
+let USER_EMAIL = null;
+let HOUSEHOLD_ID = null;        // the shared household this account belongs to
 let MEALS = [];                 // meals loaded from the database
 let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
@@ -106,12 +108,34 @@ function cellState(dayKey, slot) {
  *  Database layer
  * ============================================================ */
 
+// Find (or create) the household this signed-in person belongs to.
+async function resolveHousehold() {
+  const { data: mem, error } = await sb.from("household_members").select("*");
+  if (error) { console.error(error); }
+  if (mem && mem.length) {
+    const mine = mem.find((m) => m.user_id === USER_ID)
+      || mem.find((m) => (m.email || "").toLowerCase() === (USER_EMAIL || "").toLowerCase());
+    if (mine) {
+      HOUSEHOLD_ID = mine.household_id;
+      if (!mine.user_id) await sb.from("household_members").update({ user_id: USER_ID }).eq("id", mine.id);
+      return;
+    }
+  }
+  // Brand-new person with no invite → give them their own household.
+  const { data: h, error: he } = await sb.from("households").insert({ name: "My household" }).select().single();
+  if (he) { console.error(he); return; }
+  HOUSEHOLD_ID = h.id;
+  await sb.from("household_members").insert({ household_id: HOUSEHOLD_ID, user_id: USER_ID, email: USER_EMAIL });
+}
+
 async function loadMeals() {
-  const { data, error } = await sb.from("meals").select("*").order("name");
+  const { data, error } = await sb.from("meals").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
   if (error) { flash("Couldn't load meals."); console.error(error); return; }
   if (!data || data.length === 0) {
     await seedMeals();
-    return loadMeals();
+    const again = await sb.from("meals").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
+    MEALS = again.data || [];
+    return;
   }
   MEALS = data;
 }
@@ -119,6 +143,7 @@ async function loadMeals() {
 async function seedMeals() {
   const rows = (window.DEFAULT_MEALS || []).map((m) => ({
     user_id: USER_ID,
+    household_id: HOUSEHOLD_ID,
     name: m.name,
     category: m.category,
     location: m.location || "Home",
@@ -139,8 +164,8 @@ async function loadPlan() {
   const ws = isoDate(weekStart);
   plan = { entries: {}, days: {} };
   const [{ data: entries }, { data: days }] = await Promise.all([
-    sb.from("plan_entries").select("*").eq("week_start", ws),
-    sb.from("plan_days").select("*").eq("week_start", ws),
+    sb.from("plan_entries").select("*").eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
+    sb.from("plan_days").select("*").eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
   ]);
   (entries || []).forEach((e) => { plan.entries[ekey(e.day, e.slot)] = e; });
   (days || []).forEach((d) => { plan.days[d.day] = d; });
@@ -149,6 +174,7 @@ async function loadPlan() {
 async function saveEntry(dayKey, slot, entry) {
   const row = {
     user_id: USER_ID,
+    household_id: HOUSEHOLD_ID,
     week_start: isoDate(weekStart),
     day: dayKey,
     slot,
@@ -159,7 +185,7 @@ async function saveEntry(dayKey, slot, entry) {
     updated_at: new Date().toISOString(),
   };
   plan.entries[ekey(dayKey, slot)] = row;
-  const { error } = await sb.from("plan_entries").upsert(row, { onConflict: "user_id,week_start,day,slot" });
+  const { error } = await sb.from("plan_entries").upsert(row, { onConflict: "household_id,week_start,day,slot" });
   if (error) { flash("Couldn't save."); console.error(error); }
 }
 
@@ -167,6 +193,7 @@ async function saveEntries(list) {
   // list: [{day, slot, entry}]
   const rows = list.map(({ day, slot, entry }) => ({
     user_id: USER_ID,
+    household_id: HOUSEHOLD_ID,
     week_start: isoDate(weekStart),
     day, slot,
     status: entry.status || "planned",
@@ -177,7 +204,7 @@ async function saveEntries(list) {
   }));
   rows.forEach((r) => { plan.entries[ekey(r.day, r.slot)] = r; });
   if (rows.length) {
-    const { error } = await sb.from("plan_entries").upsert(rows, { onConflict: "user_id,week_start,day,slot" });
+    const { error } = await sb.from("plan_entries").upsert(rows, { onConflict: "household_id,week_start,day,slot" });
     if (error) { flash("Couldn't save."); console.error(error); }
   }
 }
@@ -185,20 +212,20 @@ async function saveEntries(list) {
 async function deleteEntry(dayKey, slot) {
   delete plan.entries[ekey(dayKey, slot)];
   const { error } = await sb.from("plan_entries")
-    .delete().eq("week_start", isoDate(weekStart)).eq("day", dayKey).eq("slot", slot);
+    .delete().eq("household_id", HOUSEHOLD_ID).eq("week_start", isoDate(weekStart)).eq("day", dayKey).eq("slot", slot);
   if (error) console.error(error);
 }
 
 async function setDayOut(dayKey, isOut, note) {
   const ws = isoDate(weekStart);
   if (isOut) {
-    const row = { user_id: USER_ID, week_start: ws, day: dayKey, is_out: true, note: note || null, updated_at: new Date().toISOString() };
+    const row = { user_id: USER_ID, household_id: HOUSEHOLD_ID, week_start: ws, day: dayKey, is_out: true, note: note || null, updated_at: new Date().toISOString() };
     plan.days[dayKey] = row;
-    const { error } = await sb.from("plan_days").upsert(row, { onConflict: "user_id,week_start,day" });
+    const { error } = await sb.from("plan_days").upsert(row, { onConflict: "household_id,week_start,day" });
     if (error) console.error(error);
   } else {
     delete plan.days[dayKey];
-    const { error } = await sb.from("plan_days").delete().eq("week_start", ws).eq("day", dayKey);
+    const { error } = await sb.from("plan_days").delete().eq("household_id", HOUSEHOLD_ID).eq("week_start", ws).eq("day", dayKey);
     if (error) console.error(error);
   }
 }
@@ -207,8 +234,8 @@ async function clearWeekData() {
   const ws = isoDate(weekStart);
   plan = { entries: {}, days: {} };
   await Promise.all([
-    sb.from("plan_entries").delete().eq("week_start", ws),
-    sb.from("plan_days").delete().eq("week_start", ws),
+    sb.from("plan_entries").delete().eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
+    sb.from("plan_days").delete().eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
   ]);
 }
 
@@ -561,7 +588,7 @@ async function saveMeal() {
   if (editingMealId) {
     ({ error } = await sb.from("meals").update(row).eq("id", editingMealId));
   } else {
-    ({ error } = await sb.from("meals").insert({ ...row, user_id: USER_ID }));
+    ({ error } = await sb.from("meals").insert({ ...row, user_id: USER_ID, household_id: HOUSEHOLD_ID }));
   }
   if (error) { flash("Couldn't save meal."); console.error(error); return; }
   closeMealEditor();
@@ -629,7 +656,8 @@ function showView(which) {
 async function handleSession(session) {
   if (session && session.user) {
     USER_ID = session.user.id;
-    $("account-email").textContent = session.user.email || "";
+    USER_EMAIL = session.user.email || "";
+    $("account-email").textContent = USER_EMAIL;
     showView("app");
     await boot();
   } else {
@@ -642,6 +670,7 @@ let booted = false;
 async function boot() {
   if (booted) return;
   booted = true;
+  await resolveHousehold();
   await loadMeals();
   await loadPlan();
   render();
