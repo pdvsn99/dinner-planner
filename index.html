@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dinner Planner</title>
+  <meta name="description" content="Plan the week's lunches and dinners, roll the dice on meals, treat yourself, and get an automatic shopping list." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <span class="brand-mark">🍽️</span>
+        <div>
+          <h1>Dinner Planner</h1>
+          <p class="tagline">Roll the week, treat yourself, shop smart.</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Controls -->
+    <section class="controls" aria-label="Actions">
+      <button id="btn-generate" class="btn btn-primary">🎲 Generate week</button>
+      <button id="btn-swap" class="btn">🔀 Swap selected</button>
+      <button id="btn-treat-cell" class="btn btn-treat">✨ Treat selected</button>
+      <button id="btn-treat-week" class="btn btn-treat">🎉 Treat the week!</button>
+      <span class="spacer"></span>
+      <button id="btn-print" class="btn btn-ghost">🖨️ Print</button>
+      <button id="btn-clear" class="btn btn-ghost">🧹 Clear</button>
+    </section>
+    <p id="selection-hint" class="hint">No meal selected — tap one to swap or treat it.</p>
+
+    <!-- Week grid -->
+    <section class="card">
+      <table class="week" aria-label="Weekly meal plan">
+        <thead>
+          <tr>
+            <th class="corner"></th>
+            <th>Lunch</th>
+            <th>Dinner</th>
+          </tr>
+        </thead>
+        <tbody id="grid-body"></tbody>
+      </table>
+    </section>
+
+    <!-- Shopping list -->
+    <section class="card shopping">
+      <div class="shopping-head">
+        <h2>🛒 Shopping list</h2>
+        <span id="shopping-count" class="count"></span>
+      </div>
+      <div id="shopping-body" class="shopping-body"></div>
+    </section>
+
+    <footer class="foot">
+      <p>Everything is saved on this device automatically. Edit your meals in <code>meals.js</code>.</p>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="meals.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

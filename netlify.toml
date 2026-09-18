@@ -1,0 +1,7 @@
+# Netlify configuration
+# This site is plain HTML/CSS/JS — there is nothing to build.
+# Netlify just serves the files in this folder as-is.
+
+[build]
+  publish = "."
+  command = ""
