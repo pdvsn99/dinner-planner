@@ -50,6 +50,7 @@
   <main id="view-app" class="wrap" hidden>
     <nav class="tabs">
       <button class="tab is-active" data-tab="planner">📅 Planner</button>
+      <button class="tab" data-tab="shopping">🛒 Shopping</button>
       <button class="tab" data-tab="meals">🍲 Meals</button>
     </nav>
 
@@ -64,20 +65,11 @@
         <button id="week-next" class="btn btn-ghost" aria-label="Next week">›</button>
       </div>
 
-      <div class="controls" aria-label="Actions">
-        <button id="btn-generate" class="btn btn-primary">🎲 Generate week</button>
-        <button id="btn-swap" class="btn">🔀 Swap selected</button>
-        <button id="btn-treat-cell" class="btn btn-treat">✨ Treat selected</button>
-        <button id="btn-treat-week" class="btn btn-treat">🎉 Treat the week!</button>
-        <button id="btn-edit" class="btn">✏️ Edit selected</button>
-        <span class="spacer"></span>
-        <button id="btn-print" class="btn btn-ghost">🖨️ Print</button>
-        <button id="btn-clear" class="btn btn-ghost">🧹 Clear</button>
-      </div>
-      <p id="selection-hint" class="hint">Tap a day to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).</p>
-
       <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
+    </section>
 
+    <!-- ---- Shopping tab ---- -->
+    <section id="tab-shopping" class="tab-panel" hidden>
       <div class="card shopping">
         <div class="shopping-head">
           <h2>🛒 Shopping list</h2>
@@ -85,6 +77,7 @@
         </div>
         <div id="shopping-body" class="shopping-body"></div>
       </div>
+      <p class="foot"><button id="btn-print" class="link-btn">🖨️ Print this list</button></p>
     </section>
 
     <!-- ---- Meals tab ---- -->
@@ -95,11 +88,42 @@
       </div>
       <div id="meals-list" class="meals-list"></div>
     </section>
-
-    <footer class="foot">
-      <p>Everything is saved to your account. Manage your meals in the <strong>Meals</strong> tab.</p>
-    </footer>
   </main>
+
+  <!-- ===== Bottom action bar (Planner) ===== -->
+  <div id="action-bar" class="action-bar" hidden>
+    <div class="wrap action-bar-inner">
+      <!-- Default: whole-week actions -->
+      <div id="bar-week" class="bar-group">
+        <button id="btn-generate" class="bar-btn is-primary">
+          <span class="bar-ico">🎲</span><span class="bar-lbl">Generate</span>
+        </button>
+        <button id="btn-treat-week" class="bar-btn is-treat">
+          <span class="bar-ico">🎉</span><span class="bar-lbl">Treat week</span>
+        </button>
+        <button id="btn-clear" class="bar-btn">
+          <span class="bar-ico">🧹</span><span class="bar-lbl">Clear</span>
+        </button>
+      </div>
+
+      <!-- When a day is selected: that day's actions -->
+      <div id="bar-day" class="bar-group" hidden>
+        <button id="bar-deselect" class="bar-btn bar-back" aria-label="Deselect day">
+          <span class="bar-ico">‹</span>
+        </button>
+        <span id="bar-day-label" class="bar-day-label"></span>
+        <button id="btn-swap" class="bar-btn">
+          <span class="bar-ico">🔀</span><span class="bar-lbl">Swap</span>
+        </button>
+        <button id="btn-treat-cell" class="bar-btn is-treat">
+          <span class="bar-ico">✨</span><span class="bar-lbl">Treat</span>
+        </button>
+        <button id="btn-edit" class="bar-btn is-primary">
+          <span class="bar-ico">✏️</span><span class="bar-lbl">Edit</span>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== Meal picker ===== -->
   <div id="modal" class="modal-overlay" hidden>
