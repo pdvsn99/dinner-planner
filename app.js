@@ -26,6 +26,8 @@ let USER_ID = null;
 let USER_EMAIL = null;
 let HOUSEHOLD_ID = null;        // the shared household this account belongs to
 let MEALS = [];                 // meals loaded from the database
+let SIDE_OPTIONS = [];          // shared library of side-dish names (Sides tab)
+let mealFilter = "";            // search text on the Meals tab
 let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
 let selected = null;            // { day, slot }
@@ -86,6 +88,20 @@ function loadEffortTarget() {
 function saveEffortTarget(v) {
   effortTarget = Math.min(EFFORT_MAX, Math.max(EFFORT_MIN, v | 0));
   try { localStorage.setItem("dp-effort-target", String(effortTarget)); } catch (_) {}
+}
+
+// Persist the latest live-rebalance to the database, but not on every drag tick.
+let _rebalancePending = null, _rebalanceTimer = null;
+function scheduleRebalancePersist(updates) {
+  _rebalancePending = updates;
+  clearTimeout(_rebalanceTimer);
+  _rebalanceTimer = setTimeout(flushRebalance, 500);
+}
+async function flushRebalance() {
+  clearTimeout(_rebalanceTimer);
+  const updates = _rebalancePending;
+  _rebalancePending = null;
+  if (updates && updates.length) await saveEntries(updates);
 }
 // A friendly name for how intense a target feels, per night (over 7 nights).
 function effortDescriptor(target) {
@@ -153,9 +169,26 @@ function candidates(slot, dayKey, { treat } = { treat: false }) {
     return (m.days || []).includes(dayKey);
   });
 }
-function makeEntry(meal) {
+function makeEntry(meal, source) {
   const n = randInt(meal.min_sides, meal.max_sides);
-  return { status: "planned", meal_name: meal.name, sides: pickSides(meal.sides || [], n), note: null };
+  return {
+    status: "planned",
+    meal_name: meal.name,
+    sides: pickSides(meal.sides || [], n),
+    note: null,
+    source: source || "manual",
+    // Only home-cooked meals carry an effort cost; treats don't count.
+    difficulty: meal.location === "Home" ? mealDifficulty(meal) : null,
+  };
+}
+// Effort a planned night contributes: the number stored on the entry, or, for
+// older entries saved before we stored it, looked up from the meal.
+function entryDifficulty(entry) {
+  if (!entry || !entry.meal_name || entry.status === "out") return 0;
+  const d = parseInt(entry.difficulty, 10);
+  if (d >= 1 && d <= 5) return d;
+  const m = mealByName(entry.meal_name);
+  return (m && m.location === "Home") ? mealDifficulty(m) : 0;
 }
 function entryText(entry) {
   if (!entry || !entry.meal_name) return "";
@@ -210,6 +243,29 @@ async function loadMeals() {
   MEALS = data;
 }
 
+async function loadSideOptions() {
+  const { data, error } = await sb.from("side_options").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
+  if (error) { console.error(error); SIDE_OPTIONS = []; return; }
+  SIDE_OPTIONS = data || [];
+}
+
+async function addSideOption(name) {
+  const clean = (name || "").trim();
+  if (!clean) return;
+  if (SIDE_OPTIONS.some((s) => s.name.toLowerCase() === clean.toLowerCase())) { flash("That side is already in the list."); return; }
+  const { error } = await sb.from("side_options").insert({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name: clean });
+  if (error) { flash("Couldn't add side."); console.error(error); return; }
+  await loadSideOptions();
+  renderSidesList();
+}
+
+async function deleteSideOption(id) {
+  const { error } = await sb.from("side_options").delete().eq("id", id);
+  if (error) { flash("Couldn't remove side."); console.error(error); return; }
+  await loadSideOptions();
+  renderSidesList();
+}
+
 async function seedMeals() {
   const rows = (window.DEFAULT_MEALS || []).map((m) => ({
     user_id: USER_ID,
@@ -235,6 +291,18 @@ async function seedMeals() {
     });
     if (error) console.error("seed error", error);
   }
+
+  // Seed the sides library from every distinct side the starter meals use.
+  const names = new Set();
+  (window.DEFAULT_MEALS || []).forEach((m) => (m.sides || []).forEach((s) => {
+    const n = (s || "").trim();
+    if (n) names.add(n);
+  }));
+  const sideRows = [...names].map((name) => ({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name }));
+  if (sideRows.length) {
+    const { error } = await sb.from("side_options").insert(sideRows);
+    if (error) console.error("side seed error", error); // non-fatal (e.g. already seeded)
+  }
 }
 
 async function loadPlan() {
@@ -248,8 +316,11 @@ async function loadPlan() {
   (days || []).forEach((d) => { plan.days[d.day] = d; });
 }
 
-async function saveEntry(dayKey, slot, entry) {
-  const row = {
+// Build the database row for one planned night. `difficulty` snapshots the
+// effort of the meal at the moment it's planned (home meals only), and
+// `source` records whether it was auto-filled or chosen by a person.
+function entryRow(dayKey, slot, entry) {
+  return {
     user_id: USER_ID,
     household_id: HOUSEHOLD_ID,
     week_start: isoDate(weekStart),
@@ -259,8 +330,14 @@ async function saveEntry(dayKey, slot, entry) {
     meal_name: entry.meal_name || null,
     sides: entry.sides || [],
     note: entry.note || null,
+    difficulty: (entry.difficulty === undefined ? null : entry.difficulty),
+    source: entry.source || null,
     updated_at: new Date().toISOString(),
   };
+}
+
+async function saveEntry(dayKey, slot, entry) {
+  const row = entryRow(dayKey, slot, entry);
   plan.entries[ekey(dayKey, slot)] = row;
   const { error } = await sb.from("plan_entries").upsert(row, { onConflict: "household_id,week_start,day,slot" });
   if (error) { flash("Couldn't save."); console.error(error); }
@@ -268,17 +345,7 @@ async function saveEntry(dayKey, slot, entry) {
 
 async function saveEntries(list) {
   // list: [{day, slot, entry}]
-  const rows = list.map(({ day, slot, entry }) => ({
-    user_id: USER_ID,
-    household_id: HOUSEHOLD_ID,
-    week_start: isoDate(weekStart),
-    day, slot,
-    status: entry.status || "planned",
-    meal_name: entry.meal_name || null,
-    sides: entry.sides || [],
-    note: entry.note || null,
-    updated_at: new Date().toISOString(),
-  }));
+  const rows = list.map(({ day, slot, entry }) => entryRow(day, slot, entry));
   rows.forEach((r) => { plan.entries[ekey(r.day, r.slot)] = r; });
   if (rows.length) {
     const { error } = await sb.from("plan_entries").upsert(rows, { onConflict: "household_id,week_start,day,slot" });
@@ -357,12 +424,56 @@ async function generateWeek() {
     // still lands near your target.
     const aim = avg + (Math.random() * 2 - 1) * 1.3;
     const meal = pickNearestDifficulty(s.pool, aim);
-    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal) });
+    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
     remainingBudget -= mealDifficulty(meal);
     remainingSlots -= 1;
   });
   await saveEntries(updates);
   render();
+}
+
+// Live-rebalance only the nights Generate filled (source === "auto") so they
+// hit the current slider budget, while leaving anything a person added or
+// edited exactly as it is. Manually-set home meals still count toward the
+// budget, so the auto nights flex around them.
+function rebalanceAutoSlots() {
+  const autoSlots = [];
+  let fixedEffort = 0, cookedNights = 0;
+  DAYS.forEach((d) => {
+    SLOTS.forEach((slot) => {
+      if (!eligible(d.key, slot)) return;
+      const e = cellState(d.key, slot).entry;
+      if (!e || !e.meal_name) return;
+      const m = mealByName(e.meal_name);
+      const isHome = m && m.location === "Home";
+      if (!isHome) return; // treats don't take part in the effort budget
+      cookedNights += 1;
+      if (e.source === "auto") {
+        const pool = candidates(slot, d.key, { treat: false });
+        if (pool.length) autoSlots.push({ day: d.key, slot, pool });
+        else fixedEffort += entryDifficulty(e);
+      } else {
+        fixedEffort += entryDifficulty(e); // person's choice — leave it, but count it
+      }
+    });
+  });
+  if (!autoSlots.length) return [];
+
+  // Budget for a full week, scaled to the nights actually being cooked, minus
+  // what the fixed (manual) nights already spend.
+  const scaledTarget = effortTarget * (cookedNights / DAYS.length);
+  let remaining = scaledTarget - fixedEffort;
+  let left = autoSlots.length;
+  // Fixed day order (no shuffle) keeps meals steady while the slider is dragged.
+  const updates = [];
+  autoSlots.forEach((s) => {
+    const aim = left > 0 ? remaining / left : DEFAULT_DIFFICULTY;
+    const meal = pickNearestDifficulty(s.pool, aim);
+    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
+    remaining -= mealDifficulty(meal);
+    left -= 1;
+  });
+  return updates;
 }
 
 async function treatWeek() {
@@ -373,7 +484,7 @@ async function treatWeek() {
       let pool = candidates(slot, d.key, { treat: true });
       if (pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
       if (pool.length === 0) pool = candidates(slot, d.key, { treat: false });
-      if (pool.length) updates.push({ day: d.key, slot, entry: makeEntry(rand(pool)) });
+      if (pool.length) updates.push({ day: d.key, slot, entry: makeEntry(rand(pool), "auto") });
     });
   });
   await saveEntries(updates);
@@ -384,7 +495,8 @@ async function fillCell(dayKey, slot, { treat }) {
   let pool = candidates(slot, dayKey, { treat });
   if (treat && pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
   if (pool.length === 0) { flash("No matching meals — add some in the Meals tab."); return; }
-  await saveEntry(dayKey, slot, makeEntry(rand(pool)));
+  // A person picked this one, so mark it manual — the slider won't overwrite it.
+  await saveEntry(dayKey, slot, makeEntry(rand(pool), "manual"));
   render();
 }
 
@@ -459,9 +571,9 @@ function renderEffort() {
   let planned = 0, plannedNights = 0;
   DAYS.forEach((d) => {
     const st = cellState(d.key, SLOTS[0]);
-    if (st.out || !st.entry || !st.entry.meal_name) return;
-    const m = mealByName(st.entry.meal_name);
-    if (m && m.location === "Home") { planned += mealDifficulty(m); plannedNights += 1; }
+    if (st.out) return;
+    const eff = entryDifficulty(st.entry);
+    if (eff > 0) { planned += eff; plannedNights += 1; }
   });
 
   let txt = `Target ${effortTarget} · ${effortDescriptor(effortTarget)}`;
@@ -740,7 +852,12 @@ async function savePicker() {
   const name = $("pick-meal").value;
   if (!name) { flash("Pick a meal, or use one of the buttons."); return; }
   const chosen = [...document.querySelectorAll("#pick-sides input:checked")].map((c) => c.value);
-  await saveEntry(picking.day, picking.slot, { status: "planned", meal_name: name, sides: chosen, note: null });
+  const meal = mealByName(name);
+  await saveEntry(picking.day, picking.slot, {
+    status: "planned", meal_name: name, sides: chosen, note: null,
+    source: "manual",
+    difficulty: meal && meal.location === "Home" ? mealDifficulty(meal) : null,
+  });
   closePicker();
   render();
 }
@@ -765,13 +882,40 @@ function renderDayCheckboxes(selectedDays) {
   });
 }
 
+// Tick-boxes for which library sides go with this meal. Any side already on
+// the meal but missing from the library is still shown (and kept) so editing
+// an older meal never silently drops its sides.
+function renderMealSideCheckboxes(chosen) {
+  const box = $("m-sides-box");
+  if (!box) return;
+  box.innerHTML = "";
+  const chosenSet = new Set(chosen || []);
+  const names = SIDE_OPTIONS.map((s) => s.name);
+  (chosen || []).forEach((c) => { if (!names.some((n) => n.toLowerCase() === c.toLowerCase())) names.push(c); });
+  if (!names.length) {
+    box.innerHTML = '<p class="muted empty-note">No sides yet — add some on the Sides tab.</p>';
+    return;
+  }
+  names.sort((a, b) => a.localeCompare(b)).forEach((name) => {
+    const label = document.createElement("label");
+    label.className = "side-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = name;
+    if (chosenSet.has(name)) cb.checked = true;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(" " + name));
+    box.appendChild(label);
+  });
+}
+
 function openMealEditor(meal) {
   editingMealId = meal ? meal.id : null;
   $("meal-modal-title").textContent = meal ? "Edit meal" : "Add meal";
   $("m-name").value = meal ? meal.name : "";
   $("m-location").value = meal ? meal.location : "Home";
   $("m-effort").value = String(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY);
-  $("m-sides").value = meal ? (meal.sides || []).join(", ") : "";
+  renderMealSideCheckboxes(meal ? (meal.sides || []) : []);
   $("m-min").value = meal ? meal.min_sides : 0;
   $("m-max").value = meal ? meal.max_sides : 0;
   $("m-ingredients").value = meal ? (meal.ingredients || []).join(", ") : "";
@@ -795,7 +939,7 @@ async function saveMeal() {
     category: "Dinner", // kept for the database column; lunch no longer exists
     location: $("m-location").value,
     difficulty: parseInt($("m-effort").value, 10) || DEFAULT_DIFFICULTY,
-    sides: splitList($("m-sides").value),
+    sides: [...document.querySelectorAll("#m-sides-box input:checked")].map((c) => c.value),
     min_sides: min,
     max_sides: max,
     days: [...document.querySelectorAll("#m-days input:checked")].map((c) => c.value),
@@ -828,7 +972,10 @@ function renderMealsList() {
   const box = $("meals-list");
   box.innerHTML = "";
   if (!MEALS.length) { box.innerHTML = '<p class="muted empty-note">No meals yet — add your first one.</p>'; return; }
-  MEALS.slice().sort(byName).forEach((m) => {
+  const q = mealFilter.trim().toLowerCase();
+  const shown = MEALS.slice().sort(byName).filter((m) => !q || m.name.toLowerCase().includes(q));
+  if (!shown.length) { box.innerHTML = '<p class="muted empty-note">No meals match your search.</p>'; return; }
+  shown.forEach((m) => {
     const row = document.createElement("button");
     row.className = "meal-row";
     row.type = "button";
@@ -847,6 +994,35 @@ function renderMealsList() {
   });
 }
 
+function renderSidesList() {
+  const box = $("sides-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!SIDE_OPTIONS.length) {
+    box.innerHTML = '<p class="muted empty-note">No sides yet — add your first one above.</p>';
+    return;
+  }
+  SIDE_OPTIONS.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((s) => {
+    const row = document.createElement("div");
+    row.className = "side-row";
+    const nm = document.createElement("span");
+    nm.className = "side-row-name";
+    nm.textContent = s.name;
+    row.appendChild(nm);
+    const del = document.createElement("button");
+    del.className = "icon-btn side-row-del";
+    del.type = "button";
+    del.setAttribute("aria-label", `Remove ${s.name}`);
+    del.textContent = "🗑";
+    del.addEventListener("click", () => {
+      if (!confirm(`Remove "${s.name}" from the sides list?\n\nMeals that already use it will keep it.`)) return;
+      deleteSideOption(s.id);
+    });
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
 /* ============================================================
  *  Tabs & week navigation
  * ============================================================ */
@@ -855,11 +1031,13 @@ function switchTab(name) {
   $("tab-planner").hidden = name !== "planner";
   $("tab-shopping").hidden = name !== "shopping";
   $("tab-meals").hidden = name !== "meals";
+  $("tab-sides").hidden = name !== "sides";
   // The bottom action bar belongs to the planner only.
   $("action-bar").hidden = name !== "planner";
   document.body.classList.toggle("bar-open", name === "planner");
   if (name === "shopping") renderShopping();
   if (name === "meals") renderMealsList();
+  if (name === "sides") renderSidesList();
 }
 
 async function gotoWeek(newStart) {
@@ -904,6 +1082,7 @@ async function boot() {
   effortTarget = loadEffortTarget();
   await resolveHousehold();
   await loadMeals();
+  await loadSideOptions();
   await loadPlan();
   render();
   switchTab("planner"); // reveal the planner's bottom action bar
@@ -928,17 +1107,40 @@ function wireUp() {
   // Tabs
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
+  // Meals-tab search
+  const mealSearch = $("meals-search");
+  if (mealSearch) mealSearch.addEventListener("input", () => { mealFilter = mealSearch.value; renderMealsList(); });
+
+  // Sides tab — add a side
+  const sideForm = $("side-add-form");
+  if (sideForm) sideForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("side-add-input");
+    await addSideOption(input.value);
+    input.value = "";
+    input.focus();
+  });
+
   // Week nav
   $("week-prev").addEventListener("click", () => gotoWeek(addDays(weekStart, -7)));
   $("week-next").addEventListener("click", () => gotoWeek(addDays(weekStart, 7)));
   $("week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
 
-  // Weekly effort slider — live label while dragging, save on release.
+  // Weekly effort slider — as you drag, re-pick the auto-filled nights live so
+  // the week tracks the new budget. Database writes are debounced (and flushed
+  // on release) so a drag doesn't hammer the server.
   const effortSlider = $("effort-slider");
   if (effortSlider) {
     effortSlider.min = String(EFFORT_MIN);
     effortSlider.max = String(EFFORT_MAX);
-    effortSlider.addEventListener("input", () => { saveEffortTarget(parseInt(effortSlider.value, 10)); renderEffort(); });
+    effortSlider.addEventListener("input", () => {
+      saveEffortTarget(parseInt(effortSlider.value, 10));
+      const updates = rebalanceAutoSlots();
+      updates.forEach((u) => { plan.entries[ekey(u.day, u.slot)] = entryRow(u.day, u.slot, u.entry); });
+      render();
+      if (updates.length) scheduleRebalancePersist(updates);
+    });
+    effortSlider.addEventListener("change", flushRebalance);
   }
 
   // Planner actions

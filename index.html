@@ -52,6 +52,7 @@
       <button class="tab is-active" data-tab="planner">📅 Planner</button>
       <button class="tab" data-tab="shopping">🛒 Shopping</button>
       <button class="tab" data-tab="meals">🍲 Meals</button>
+      <button class="tab" data-tab="sides">🥗 Sides</button>
     </nav>
 
     <!-- ---- Planner tab ---- -->
@@ -97,7 +98,22 @@
         <h2>Your meals</h2>
         <button id="btn-add-meal" class="btn btn-primary">＋ Add meal</button>
       </div>
+      <input id="meals-search" class="select meals-search" type="search"
+             placeholder="🔍 Search meals…" autocomplete="off" aria-label="Search meals" />
       <div id="meals-list" class="meals-list"></div>
+    </section>
+
+    <!-- ---- Sides tab ---- -->
+    <section id="tab-sides" class="tab-panel" hidden>
+      <div class="meals-head">
+        <h2>Sides</h2>
+      </div>
+      <p class="muted" style="margin-top:0">Your shared list of side dishes. Tick which ones go with each meal in the meal editor.</p>
+      <form id="side-add-form" class="side-add">
+        <input id="side-add-input" class="select" type="text" placeholder="Add a side (e.g. mash)" autocomplete="off" />
+        <button class="btn btn-primary" type="submit">＋ Add</button>
+      </form>
+      <div id="sides-list" class="sides-list"></div>
     </section>
   </main>
 
@@ -197,8 +213,8 @@
           <option value="5">Very hard</option>
         </select>
 
-        <label class="field-label" for="m-sides">Sides it can have <span class="hint-inline">(comma separated)</span></label>
-        <input id="m-sides" class="select" type="text" placeholder="mash, gravy, peas, wedges" />
+        <div class="field-label">Sides it can have <span class="hint-inline">(manage the list on the Sides tab)</span></div>
+        <div id="m-sides-box" class="sides"></div>
 
         <div class="grid-2">
           <div>
