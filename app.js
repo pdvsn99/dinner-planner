@@ -30,7 +30,7 @@ let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
 let selected = null;            // { day, slot }
 let editingMealId = null;       // for the meal editor
-let effortTarget = loadEffortTarget(); // total effort budget for a 7-night week
+let effortTarget = 21; // total effort budget for a 7-night week; real value loaded in boot()
 
 /* ---------- tiny helpers ---------- */
 const $ = (id) => document.getElementById(id);
@@ -901,6 +901,7 @@ let booted = false;
 async function boot() {
   if (booted) return;
   booted = true;
+  effortTarget = loadEffortTarget();
   await resolveHousehold();
   await loadMeals();
   await loadPlan();
