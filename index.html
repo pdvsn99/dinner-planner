@@ -133,8 +133,14 @@
         <button id="modal-close" class="icon-btn" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <label class="field-label" for="pick-meal">Meal</label>
-        <select id="pick-meal" class="select"></select>
+        <label class="field-label" for="pick-search">Meal</label>
+        <div id="pick-combo" class="combo">
+          <input type="hidden" id="pick-meal" />
+          <input id="pick-search" class="select combo-input" type="text"
+                 placeholder="Search meals…" autocomplete="off"
+                 role="combobox" aria-expanded="false" aria-controls="pick-list" />
+          <div id="pick-list" class="combo-list" role="listbox" hidden></div>
+        </div>
         <div id="pick-sides-wrap" class="sides-wrap">
           <div class="field-label">Sides <span id="pick-hint" class="hint-inline"></span></div>
           <div id="pick-sides" class="sides"></div>

@@ -158,7 +158,13 @@ async function seedMeals() {
     ingredients: m.ingredients || [],
   }));
   if (rows.length) {
-    const { error } = await sb.from("meals").insert(rows);
+    // upsert + ignoreDuplicates so seeding twice (e.g. two tabs/devices on a
+    // brand-new account) can never create duplicate meals. Backed by the
+    // (household_id, name) unique index in the database.
+    const { error } = await sb.from("meals").upsert(rows, {
+      onConflict: "household_id,name",
+      ignoreDuplicates: true,
+    });
     if (error) console.error("seed error", error);
   }
 }
@@ -508,31 +514,85 @@ function escapeHtml(s) {
 let picking = null;
 const byName = (a, b) => a.name.localeCompare(b.name);
 
-function addOptGroup(sel, label, meals) {
-  if (!meals.length) return;
-  const g = document.createElement("optgroup");
-  g.label = label;
-  meals.forEach((m) => g.appendChild(new Option(m.name, m.name)));
-  sel.appendChild(g);
+// Build the grouped list of meals shown in the searchable dropdown,
+// optionally filtered by what the person has typed.
+function comboGroups(query) {
+  const q = (query || "").trim().toLowerCase();
+  const match = (m) => !q || m.name.toLowerCase().includes(q);
+  return [
+    { label: "Home meals", items: MEALS.filter((m) => m.location === "Home" && match(m)).sort(byName) },
+    { label: "Treats (takeaway / eating out)", items: MEALS.filter((m) => m.location !== "Home" && match(m)).sort(byName) },
+  ].filter((g) => g.items.length);
+}
+
+// (Re)draw the dropdown panel. `query` filters; nothing shown = "no matches".
+function renderComboList(query) {
+  const list = $("pick-list");
+  const current = $("pick-meal").value;
+  list.innerHTML = "";
+  const groups = comboGroups(query);
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "combo-empty";
+    empty.textContent = "No meals match";
+    list.appendChild(empty);
+    return;
+  }
+  groups.forEach((g) => {
+    const head = document.createElement("div");
+    head.className = "combo-group";
+    head.textContent = g.label;
+    list.appendChild(head);
+    g.items.forEach((m) => {
+      const opt = document.createElement("div");
+      opt.className = "combo-option" + (m.name === current ? " is-current" : "");
+      opt.setAttribute("role", "option");
+      opt.textContent = m.name;
+      opt.addEventListener("mousedown", (ev) => {
+        // mousedown (not click) so it fires before the input's blur closes the list
+        ev.preventDefault();
+        chooseComboMeal(m.name);
+      });
+      list.appendChild(opt);
+    });
+  });
+}
+
+function openComboList() {
+  renderComboList($("pick-search").value === $("pick-meal").dataset.label ? "" : $("pick-search").value);
+  $("pick-list").hidden = false;
+  $("pick-search").setAttribute("aria-expanded", "true");
+}
+function closeComboList() {
+  $("pick-list").hidden = true;
+  $("pick-search").setAttribute("aria-expanded", "false");
+}
+
+// Commit a chosen meal: store its name, show it in the box, refresh sides.
+function chooseComboMeal(name) {
+  const hidden = $("pick-meal");
+  hidden.value = name;
+  hidden.dataset.label = name;
+  $("pick-search").value = name;
+  closeComboList();
+  renderSideChoices(name, []);
 }
 
 function openPicker(dayKey, slot) {
   picking = { day: dayKey, slot };
   const dayLabel = DAYS.find((x) => x.key === dayKey).label;
   $("modal-title").textContent = `${dayLabel} dinner`;
-  const sel = $("pick-meal");
-  sel.innerHTML = "";
-  sel.appendChild(new Option("— choose a meal —", ""));
-  addOptGroup(sel, "Home meals", MEALS.filter((m) => m.location === "Home").sort(byName));
-  addOptGroup(sel, "Treats (takeaway / eating out)", MEALS.filter((m) => m.location !== "Home").sort(byName));
   const cur = plan.entries[ekey(dayKey, slot)];
   const curName = cur && cur.status !== "out" ? cur.meal_name : "";
-  sel.value = curName || "";
-  renderSideChoices(sel.value, cur ? cur.sides : []);
+  const hidden = $("pick-meal");
+  hidden.value = curName || "";
+  hidden.dataset.label = curName || "";
+  $("pick-search").value = curName || "";
+  closeComboList();
+  renderSideChoices(curName || "", cur ? cur.sides : []);
   $("modal").hidden = false;
-  sel.focus();
 }
-function closePicker() { $("modal").hidden = true; picking = null; }
+function closePicker() { $("modal").hidden = true; closeComboList(); picking = null; }
 
 function renderSideChoices(mealName, chosen) {
   const wrap = $("pick-sides-wrap");
@@ -763,8 +823,21 @@ function wireUp() {
   $("btn-clear").addEventListener("click", clearWeek);
   $("bar-deselect").addEventListener("click", () => { selected = null; render(); });
 
-  // Picker
-  $("pick-meal").addEventListener("change", (e) => renderSideChoices(e.target.value, []));
+  // Picker — searchable meal dropdown
+  const search = $("pick-search");
+  search.addEventListener("focus", openComboList);
+  search.addEventListener("input", () => { renderComboList(search.value); $("pick-list").hidden = false; });
+  search.addEventListener("blur", () => setTimeout(closeComboList, 120));
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeComboList(); return; }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = $("pick-list").querySelector(".combo-option");
+      if (first) chooseComboMeal(first.textContent);
+    } else if (e.key === "ArrowDown" && $("pick-list").hidden) {
+      openComboList();
+    }
+  });
   $("pick-save").addEventListener("click", savePicker);
   $("pick-cancel").addEventListener("click", closePicker);
   $("modal-close").addEventListener("click", closePicker);
