@@ -289,7 +289,7 @@ async function fillCell(dayKey, slot, { treat }) {
 }
 
 function requireSelection() {
-  if (!selected) { flash("Tap a meal in the table first."); return false; }
+  if (!selected) { flash("Tap a day first."); return false; }
   return true;
 }
 async function swapSelected() { if (requireSelection()) await fillCell(selected.day, selected.slot, { treat: false }); }
@@ -362,29 +362,35 @@ function renderGrid() {
     card.className = "day-card";
     if (isoDate(dateForDay(d.key)) === todayIso) card.classList.add("is-today");
 
-    // --- header: day name + date, plus the "mark out" toggle ---
-    const head = document.createElement("div");
-    head.className = "day-card-head";
-    const dateStr = dateForDay(d.key).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    head.innerHTML = `<span class="day-when"><span class="day-name">${d.label}</span><span class="day-date">${dateStr}</span></span>`;
-    const outBtn = document.createElement("button");
-    outBtn.className = "day-out-btn";
-    outBtn.type = "button";
-    outBtn.title = dayOut ? "Bring this day back into the planner" : "Mark this day out (away / eating out)";
-    outBtn.setAttribute("aria-label", outBtn.title);
-    outBtn.textContent = dayOut ? "↩ Back in" : "⋯";
-    outBtn.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
-    head.appendChild(outBtn);
-    card.appendChild(head);
+    // --- left marker: short day name + date ---
+    const dateObj = dateForDay(d.key);
+    const tab = document.createElement("div");
+    tab.className = "day-tab";
+    tab.innerHTML =
+      `<span class="day-name">${d.label.slice(0, 3)}</span>` +
+      `<span class="day-date">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>`;
+    card.appendChild(tab);
 
-    // --- body: the dinner ---
+    // --- meal cell ---
     const cell = document.createElement("div");
     cell.className = "cell day-meal";
 
+    // whole day marked out of the planner
     if (dayOut) {
       const note = plan.days[d.key].note;
       cell.classList.add("cell-out", "day-out");
-      cell.innerHTML = `<span class="out-label">🚫 Out of the planner</span>${note ? `<span class="out-note">${escapeHtml(note)}</span>` : ""}`;
+      const body = document.createElement("div");
+      body.className = "cell-body";
+      body.innerHTML = `<span class="out-label">🚫 Out of the planner</span>${note ? `<span class="out-note">${escapeHtml(note)}</span>` : ""}`;
+      cell.appendChild(body);
+      const back = document.createElement("button");
+      back.className = "day-out-btn";
+      back.type = "button";
+      back.title = "Bring this day back into the planner";
+      back.setAttribute("aria-label", back.title);
+      back.textContent = "↩";
+      back.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
+      cell.appendChild(back);
       card.appendChild(cell);
       list.appendChild(card);
       return;
@@ -400,7 +406,7 @@ function renderGrid() {
     const body = document.createElement("div");
     body.className = "cell-body";
     if (st.out) {
-      body.innerHTML = `<span class="out-label">🚫 Out</span>${st.note ? `<span class="out-note">${escapeHtml(st.note)}</span>` : ""}`;
+      body.innerHTML = `<span class="out-label">🚫 Eating out</span>${st.note ? `<span class="out-note">${escapeHtml(st.note)}</span>` : ""}`;
     } else if (st.entry && st.entry.meal_name) {
       const txt = document.createElement("span");
       txt.className = "cell-text";
@@ -418,25 +424,55 @@ function renderGrid() {
     }
     cell.appendChild(body);
 
+    // right-side actions: pencil (pick exactly) + ⋯ (mark whole day out)
+    const actions = document.createElement("div");
+    actions.className = "cell-actions";
+
     const edit = document.createElement("button");
     edit.className = "cell-edit";
     edit.type = "button";
     edit.setAttribute("aria-label", `Choose ${d.label} dinner`);
     edit.textContent = "✏️";
     edit.addEventListener("click", (ev) => { ev.stopPropagation(); selected = { day: d.key, slot }; openPicker(d.key, slot); });
-    cell.appendChild(edit);
+    actions.appendChild(edit);
 
-    cell.addEventListener("click", () => { selected = { day: d.key, slot }; render(); });
+    const outBtn = document.createElement("button");
+    outBtn.className = "day-out-btn";
+    outBtn.type = "button";
+    outBtn.title = "Mark this day out (away / eating out)";
+    outBtn.setAttribute("aria-label", outBtn.title);
+    outBtn.textContent = "⋯";
+    outBtn.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
+    actions.appendChild(outBtn);
+
+    cell.appendChild(actions);
+
+    // Tap the meal to select the day (tap again to deselect).
+    cell.addEventListener("click", () => {
+      const same = selected && selected.day === d.key && selected.slot === slot;
+      selected = same ? null : { day: d.key, slot };
+      render();
+    });
     card.appendChild(cell);
     list.appendChild(card);
   });
 
-  const hint = $("selection-hint");
+  renderActionBar();
+}
+
+// Swap the bottom bar between whole-week actions and the selected day's actions.
+function renderActionBar() {
+  const barWeek = $("bar-week");
+  const barDay = $("bar-day");
+  if (!barWeek || !barDay) return;
   if (selected) {
     const dayLabel = DAYS.find((x) => x.key === selected.day).label;
-    hint.textContent = `Selected: ${dayLabel}. Now use Swap, Treat or Edit above.`;
+    $("bar-day-label").textContent = dayLabel;
+    barWeek.hidden = true;
+    barDay.hidden = false;
   } else {
-    hint.textContent = "Tap a day to select it, or tap its ✏️ to choose exactly what you want. Use a day's ⋯ to mark it out (away / eating out).";
+    barWeek.hidden = false;
+    barDay.hidden = true;
   }
 }
 
@@ -638,7 +674,12 @@ function renderMealsList() {
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.tab === name));
   $("tab-planner").hidden = name !== "planner";
+  $("tab-shopping").hidden = name !== "shopping";
   $("tab-meals").hidden = name !== "meals";
+  // The bottom action bar belongs to the planner only.
+  $("action-bar").hidden = name !== "planner";
+  document.body.classList.toggle("bar-open", name === "planner");
+  if (name === "shopping") renderShopping();
   if (name === "meals") renderMealsList();
 }
 
@@ -657,6 +698,11 @@ function showView(which) {
   $("view-auth").hidden = which !== "auth";
   $("view-app").hidden = which !== "app";
   $("account").hidden = which !== "app";
+  // The fixed action bar must never hang over the loading or sign-in screens.
+  if (which !== "app") {
+    $("action-bar").hidden = true;
+    document.body.classList.remove("bar-open");
+  }
 }
 
 async function handleSession(session) {
@@ -680,6 +726,7 @@ async function boot() {
   await loadMeals();
   await loadPlan();
   render();
+  switchTab("planner"); // reveal the planner's bottom action bar
 }
 
 function wireUp() {
@@ -714,6 +761,7 @@ function wireUp() {
   $("btn-edit").addEventListener("click", editSelected);
   $("btn-print").addEventListener("click", () => window.print());
   $("btn-clear").addEventListener("click", clearWeek);
+  $("bar-deselect").addEventListener("click", () => { selected = null; render(); });
 
   // Picker
   $("pick-meal").addEventListener("change", (e) => renderSideChoices(e.target.value, []));
