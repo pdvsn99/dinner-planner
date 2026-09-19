@@ -65,6 +65,17 @@
         <button id="week-next" class="btn btn-ghost" aria-label="Next week">›</button>
       </div>
 
+      <div class="effort-panel">
+        <div class="effort-head">
+          <span class="effort-title">🍳 Weekly effort</span>
+          <span id="effort-readout" class="effort-readout"></span>
+        </div>
+        <input id="effort-slider" class="effort-slider" type="range" min="7" max="35" step="1"
+               aria-label="Weekly effort budget" />
+        <div class="effort-scale"><span>Chill</span><span>Balanced</span><span>Full-on</span></div>
+        <p class="effort-note">Sets how hard the week's cooking is when you tap Generate.</p>
+      </div>
+
       <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
     </section>
 
@@ -175,6 +186,15 @@
           <option value="Home">Home (cooked)</option>
           <option value="Takeaway">Takeaway (treat)</option>
           <option value="Eating Out">Eating Out (treat)</option>
+        </select>
+
+        <label class="field-label" for="m-effort">Effort to make</label>
+        <select id="m-effort" class="select">
+          <option value="1">Very easy</option>
+          <option value="2">Easy</option>
+          <option value="3">Medium</option>
+          <option value="4">Hard</option>
+          <option value="5">Very hard</option>
         </select>
 
         <label class="field-label" for="m-sides">Sides it can have <span class="hint-inline">(comma separated)</span></label>

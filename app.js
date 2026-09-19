@@ -30,6 +30,7 @@ let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
 let selected = null;            // { day, slot }
 let editingMealId = null;       // for the meal editor
+let effortTarget = loadEffortTarget(); // total effort budget for a 7-night week
 
 /* ---------- tiny helpers ---------- */
 const $ = (id) => document.getElementById(id);
@@ -49,6 +50,72 @@ function pickSides(pool, n) {
   return out;
 }
 function mealByName(name) { return MEALS.find((m) => m.name === name); }
+
+/* ---------- effort / difficulty ----------
+ * Every meal has a difficulty of 1..5, stored as a number in the database
+ * but shown to people as words. Old meals only had a text "ease" field
+ * (Easy/Medium/Hard), so we fall back to that when no number is set.       */
+const EFFORT_LEVELS = [
+  { n: 1, label: "Very easy" },
+  { n: 2, label: "Easy" },
+  { n: 3, label: "Medium" },
+  { n: 4, label: "Hard" },
+  { n: 5, label: "Very hard" },
+];
+const EASE_TO_DIFFICULTY = { easy: 2, medium: 3, hard: 4 };
+const DEFAULT_DIFFICULTY = 3;
+
+function mealDifficulty(m) {
+  if (!m) return DEFAULT_DIFFICULTY;
+  const d = parseInt(m.difficulty, 10);
+  if (d >= 1 && d <= 5) return d;
+  return EASE_TO_DIFFICULTY[(m.ease || "").toLowerCase()] || DEFAULT_DIFFICULTY;
+}
+function effortLabel(n) {
+  const lvl = EFFORT_LEVELS.find((l) => l.n === n);
+  return lvl ? lvl.label : "Medium";
+}
+
+/* The weekly effort budget is remembered on this device (no login needed). */
+const EFFORT_MIN = 7, EFFORT_MAX = 35, EFFORT_DEFAULT = 21;
+function loadEffortTarget() {
+  let v;
+  try { v = parseInt(localStorage.getItem("dp-effort-target"), 10); } catch (_) {}
+  return (v >= EFFORT_MIN && v <= EFFORT_MAX) ? v : EFFORT_DEFAULT;
+}
+function saveEffortTarget(v) {
+  effortTarget = Math.min(EFFORT_MAX, Math.max(EFFORT_MIN, v | 0));
+  try { localStorage.setItem("dp-effort-target", String(effortTarget)); } catch (_) {}
+}
+// A friendly name for how intense a target feels, per night (over 7 nights).
+function effortDescriptor(target) {
+  const avg = target / 7;
+  if (avg < 1.8) return "Chill";
+  if (avg < 2.6) return "Easy-going";
+  if (avg < 3.4) return "Balanced";
+  if (avg < 4.2) return "Ambitious";
+  return "Full-on";
+}
+// Shuffle a copy of an array (Fisher–Yates).
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+// From a pool, pick a meal whose difficulty is closest to `want`.
+// Ties are broken at random so repeated Generates still feel fresh.
+function pickNearestDifficulty(pool, want) {
+  let best = Infinity, group = [];
+  pool.forEach((m) => {
+    const dist = Math.abs(mealDifficulty(m) - want);
+    if (dist < best - 1e-9) { best = dist; group = [m]; }
+    else if (Math.abs(dist - best) < 1e-9) group.push(m);
+  });
+  return rand(group);
+}
 
 /* ---------- dates ---------- */
 function mondayOf(d) {
@@ -151,6 +218,7 @@ async function seedMeals() {
     category: m.category,
     location: m.location || "Home",
     ease: m.ease || null,
+    difficulty: EASE_TO_DIFFICULTY[(m.ease || "").toLowerCase()] || DEFAULT_DIFFICULTY,
     sides: m.sides || [],
     min_sides: m.min || 0,
     max_sides: m.max || 0,
@@ -259,13 +327,39 @@ function eligible(dayKey, slot) {
 }
 
 async function generateWeek() {
-  const updates = [];
+  // Collect the nights we actually need to fill (skipping days marked out
+  // and days no home meal is allowed on).
+  const slots = [];
   DAYS.forEach((d) => {
     SLOTS.forEach((slot) => {
       if (!eligible(d.key, slot)) return;
       const pool = candidates(slot, d.key, { treat: false });
-      if (pool.length) updates.push({ day: d.key, slot, entry: makeEntry(rand(pool)) });
+      if (pool.length) slots.push({ day: d.key, slot, pool });
     });
+  });
+
+  // The slider is a budget for a full 7-night week, so scale it to however
+  // many nights are being cooked — that keeps the *intensity* steady when
+  // some days are marked out.
+  let remainingBudget = effortTarget * (slots.length / DAYS.length);
+  let remainingSlots = slots.length;
+
+  // Work through the nights in random order. Each one aims for the average
+  // effort still left to spend (budget ÷ nights remaining), then we pick the
+  // closest meal and subtract what it actually cost. Easy nights leave more
+  // room for a hard one later, and vice-versa.
+  const updates = [];
+  shuffled(slots).forEach((s) => {
+    const avg = remainingSlots > 0 ? remainingBudget / remainingSlots : DEFAULT_DIFFICULTY;
+    // Swing each night a little around the running average so a week isn't
+    // seven identical nights. Because we always aim at the budget still
+    // *left*, an easy night frees up a harder one later — so the total
+    // still lands near your target.
+    const aim = avg + (Math.random() * 2 - 1) * 1.3;
+    const meal = pickNearestDifficulty(s.pool, aim);
+    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal) });
+    remainingBudget -= mealDifficulty(meal);
+    remainingSlots -= 1;
   });
   await saveEntries(updates);
   render();
@@ -349,8 +443,30 @@ function buildShoppingList() {
  * ============================================================ */
 function render() {
   renderWeekNav();
+  renderEffort();
   renderGrid();
   renderShopping();
+}
+
+// Update the weekly-effort control: slider position, target label, and the
+// actual effort already planned into the visible week.
+function renderEffort() {
+  const slider = $("effort-slider");
+  const readout = $("effort-readout");
+  if (!slider || !readout) return;
+  slider.value = effortTarget;
+
+  let planned = 0, plannedNights = 0;
+  DAYS.forEach((d) => {
+    const st = cellState(d.key, SLOTS[0]);
+    if (st.out || !st.entry || !st.entry.meal_name) return;
+    const m = mealByName(st.entry.meal_name);
+    if (m && m.location === "Home") { planned += mealDifficulty(m); plannedNights += 1; }
+  });
+
+  let txt = `Target ${effortTarget} · ${effortDescriptor(effortTarget)}`;
+  if (plannedNights) txt += ` · this week ${planned}`;
+  readout.textContent = txt;
 }
 
 function renderWeekNav() { $("week-title").textContent = weekTitle(); }
@@ -654,6 +770,7 @@ function openMealEditor(meal) {
   $("meal-modal-title").textContent = meal ? "Edit meal" : "Add meal";
   $("m-name").value = meal ? meal.name : "";
   $("m-location").value = meal ? meal.location : "Home";
+  $("m-effort").value = String(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY);
   $("m-sides").value = meal ? (meal.sides || []).join(", ") : "";
   $("m-min").value = meal ? meal.min_sides : 0;
   $("m-max").value = meal ? meal.max_sides : 0;
@@ -677,6 +794,7 @@ async function saveMeal() {
     name,
     category: "Dinner", // kept for the database column; lunch no longer exists
     location: $("m-location").value,
+    difficulty: parseInt($("m-effort").value, 10) || DEFAULT_DIFFICULTY,
     sides: splitList($("m-sides").value),
     min_sides: min,
     max_sides: max,
@@ -718,6 +836,7 @@ function renderMealsList() {
     const bits = [];
     if (treat) bits.push(escapeHtml(m.location));
     else bits.push("Home");
+    if (!treat) bits.push(escapeHtml(effortLabel(mealDifficulty(m))));
     if (m.sides && m.sides.length) bits.push(m.sides.length + " side" + (m.sides.length === 1 ? "" : "s"));
     row.innerHTML =
       `<span class="meal-row-main"><span class="meal-row-name">${escapeHtml(m.name)}</span>` +
@@ -812,6 +931,14 @@ function wireUp() {
   $("week-prev").addEventListener("click", () => gotoWeek(addDays(weekStart, -7)));
   $("week-next").addEventListener("click", () => gotoWeek(addDays(weekStart, 7)));
   $("week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
+
+  // Weekly effort slider — live label while dragging, save on release.
+  const effortSlider = $("effort-slider");
+  if (effortSlider) {
+    effortSlider.min = String(EFFORT_MIN);
+    effortSlider.max = String(EFFORT_MAX);
+    effortSlider.addEventListener("input", () => { saveEffortTarget(parseInt(effortSlider.value, 10)); renderEffort(); });
+  }
 
   // Planner actions
   $("btn-generate").addEventListener("click", generateWeek);
