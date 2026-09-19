@@ -362,6 +362,50 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
 }
 .select:focus-visible { outline: 2px solid var(--brand); border-color: var(--brand); }
 
+/* Searchable meal dropdown (custom combobox) */
+.combo { position: relative; }
+.combo-input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+.combo-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+.combo-group {
+  padding: 8px 10px 4px;
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+.combo-option {
+  padding: 11px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: .96rem;
+}
+.combo-option:hover, .combo-option:active { background: var(--brand-tint); }
+.combo-option.is-current {
+  background: var(--brand-tint);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.combo-empty { padding: 12px 10px; color: var(--ink-soft); font-size: .9rem; }
+
 .sides-wrap { margin-top: 16px; }
 .sides { display: flex; flex-wrap: wrap; gap: 8px; }
 .side-item {
