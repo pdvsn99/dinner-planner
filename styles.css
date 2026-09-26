@@ -41,6 +41,11 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* The hidden attribute must always win over class-level display rules
+ * (e.g. .modal-overlay/.center-view set display:flex). Without this the
+ * pop-up sheets and hidden views render on top of everything. */
+[hidden] { display: none !important; }
+
 html { background: var(--bg); }
 body {
   font-family: var(--body);
