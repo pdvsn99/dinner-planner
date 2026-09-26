@@ -30,7 +30,6 @@ let SIDE_OPTIONS = [];          // shared library of side-dish names (Sides tab)
 let mealFilter = "";            // search text on the Meals tab
 let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
-let selected = null;            // { day, slot }
 let editingMealId = null;       // for the meal editor
 let effortTarget = 21; // total effort budget for a 7-night week; real value loaded in boot()
 
@@ -441,131 +440,72 @@ function eligible(dayKey, slot) {
   return !st.out;
 }
 
-async function generateWeek() {
-  // Collect the nights we actually need to fill (skipping days marked out
-  // and days no home meal is allowed on).
-  const slots = [];
-  DAYS.forEach((d) => {
-    SLOTS.forEach((slot) => {
-      if (!eligible(d.key, slot)) return;
-      const pool = candidates(slot, d.key, { treat: false });
-      if (pool.length) slots.push({ day: d.key, slot, pool });
-    });
-  });
+// A night's lock state, from the `source` recorded on its entry.
+//   manual → locked ("your pick"); auto → rolled. Empty / night-off → neither.
+function isLocked(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "manual"); }
+function isRolled(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "auto"); }
 
-  // The slider is a budget for a full 7-night week, so scale it to however
-  // many nights are being cooked — that keeps the *intensity* steady when
-  // some days are marked out.
-  let remainingBudget = effortTarget * (slots.length / DAYS.length);
-  let remainingSlots = slots.length;
-
-  // Work through the nights in random order. Each one aims for the average
-  // effort still left to spend (budget ÷ nights remaining), then we pick the
-  // closest meal and subtract what it actually cost. Easy nights leave more
-  // room for a hard one later, and vice-versa.
+// Roll only the empty nights (leave locked picks, rolled meals and nights off).
+async function rollEmptyNights() {
   const updates = [];
-  const usedNames = new Set();
-  shuffled(slots).forEach((s) => {
-    const avg = remainingSlots > 0 ? remainingBudget / remainingSlots : DEFAULT_DIFFICULTY;
-    // Swing each night a little around the running average so a week isn't
-    // seven identical nights. Because we always aim at the budget still
-    // *left*, an easy night frees up a harder one later — so the total
-    // still lands near your target.
-    const aim = avg + (Math.random() * 2 - 1) * 1.3;
-    const meal = pickNearestDifficulty(s.pool, aim, usedNames);
-    usedNames.add(meal.name);
-    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
-    remainingBudget -= mealDifficulty(meal);
-    remainingSlots -= 1;
+  DAYS.forEach((d) => {
+    if (!eligible(d.key, SLOTS[0])) return;
+    const e = plan.entries[ekey(d.key, SLOTS[0])];
+    if (e && e.meal_name && e.status !== "out") return; // already has something
+    const pool = candidates(SLOTS[0], d.key, { treat: false });
+    if (pool.length) updates.push({ day: d.key, slot: SLOTS[0], entry: makeEntry(rand(pool), "auto") });
   });
+  if (!updates.length) { flash("No empty nights to roll."); return; }
   await saveEntries(updates);
   render();
 }
 
-// Live-rebalance only the nights Generate filled (source === "auto") so they
-// hit the current slider budget, while leaving anything a person added or
-// edited exactly as it is. Manually-set home meals still count toward the
-// budget, so the auto nights flex around them.
-function rebalanceAutoSlots() {
-  const autoSlots = [];
-  const usedNames = new Set(); // don't let the expiry nudge repeat a dish
-  let fixedEffort = 0, cookedNights = 0;
-  DAYS.forEach((d) => {
-    SLOTS.forEach((slot) => {
-      if (!eligible(d.key, slot)) return;
-      const e = cellState(d.key, slot).entry;
-      if (!e || !e.meal_name) return;
-      const m = mealByName(e.meal_name);
-      const isHome = m && m.location === "Home";
-      if (!isHome) return; // treats don't take part in the effort budget
-      cookedNights += 1;
-      if (e.source === "auto") {
-        const pool = candidates(slot, d.key, { treat: false });
-        if (pool.length) autoSlots.push({ day: d.key, slot, pool });
-        else fixedEffort += entryDifficulty(e);
-      } else {
-        fixedEffort += entryDifficulty(e); // person's choice — leave it, but count it
-        usedNames.add(e.meal_name); // and don't duplicate it on an auto night
-      }
-    });
-  });
-  if (!autoSlots.length) return [];
-
-  // Budget for a full week, scaled to the nights actually being cooked, minus
-  // what the fixed (manual) nights already spend.
-  const scaledTarget = effortTarget * (cookedNights / DAYS.length);
-  let remaining = scaledTarget - fixedEffort;
-  let left = autoSlots.length;
-  // Fixed day order (no shuffle) keeps meals steady while the slider is dragged.
-  const updates = [];
-  autoSlots.forEach((s) => {
-    const aim = left > 0 ? remaining / left : DEFAULT_DIFFICULTY;
-    const meal = pickNearestDifficulty(s.pool, aim, usedNames);
-    usedNames.add(meal.name);
-    updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
-    remaining -= mealDifficulty(meal);
-    left -= 1;
-  });
-  return updates;
-}
-
-async function treatWeek() {
+// Re-roll every night that isn't locked (empty nights and previously-rolled
+// ones), leaving your own picks and nights off untouched.
+async function reRollUnlocked() {
   const updates = [];
   DAYS.forEach((d) => {
-    SLOTS.forEach((slot) => {
-      if (!eligible(d.key, slot)) return;
-      let pool = candidates(slot, d.key, { treat: true });
-      if (pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
-      if (pool.length === 0) pool = candidates(slot, d.key, { treat: false });
-      if (pool.length) updates.push({ day: d.key, slot, entry: makeEntry(rand(pool), "auto") });
-    });
+    if (!eligible(d.key, SLOTS[0])) return;
+    const e = plan.entries[ekey(d.key, SLOTS[0])];
+    if (isLocked(e)) return; // your pick — leave it
+    const pool = candidates(SLOTS[0], d.key, { treat: false });
+    if (pool.length) updates.push({ day: d.key, slot: SLOTS[0], entry: makeEntry(rand(pool), "auto") });
   });
+  if (!updates.length) { flash("Nothing to re-roll — lock or add a meal first."); return; }
   await saveEntries(updates);
   render();
 }
 
-async function fillCell(dayKey, slot, { treat }) {
+// Clear only the rolled (unlocked) nights; keep your own picks and nights off.
+async function clearUnlocked() {
+  const days = DAYS.filter((d) => isRolled(plan.entries[ekey(d.key, SLOTS[0])])).map((d) => d.key);
+  if (!days.length) { flash("No rolled nights to clear."); return; }
+  for (const day of days) await deleteEntry(day, SLOTS[0]);
+  render();
+}
+
+// Fill one night with a random matching meal. `lock` marks it as your pick.
+async function fillCell(dayKey, slot, { treat = false, lock = false } = {}) {
   let pool = candidates(slot, dayKey, { treat });
   if (treat && pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
   if (pool.length === 0) { flash("No matching meals — add some in the Meals tab."); return; }
-  // A person picked this one, so mark it manual — the slider won't overwrite it.
-  await saveEntry(dayKey, slot, makeEntry(rand(pool), "manual"));
+  await saveEntry(dayKey, slot, makeEntry(rand(pool), lock ? "manual" : "auto"));
   render();
 }
 
-function requireSelection() {
-  if (!selected) { flash("Tap a day first."); return false; }
-  return true;
-}
-async function swapSelected() { if (requireSelection()) await fillCell(selected.day, selected.slot, { treat: false }); }
-async function treatSelected() { if (requireSelection()) await fillCell(selected.day, selected.slot, { treat: true }); }
-function editSelected() { if (requireSelection()) openPicker(selected.day, selected.slot); }
+// Per-night buttons on the planner rows.
+async function rollNight(dayKey) { await fillCell(dayKey, SLOTS[0], { treat: false, lock: false }); }
+async function treatNight(dayKey) { await fillCell(dayKey, SLOTS[0], { treat: true, lock: true }); }
 
-async function clearWeek() {
-  if (!confirm("Clear all meals and 'out' marks for this week?")) return;
-  await clearWeekData();
+// Flip a night between locked (your pick) and rolled, keeping the same meal.
+async function toggleLock(dayKey) {
+  const e = plan.entries[ekey(dayKey, SLOTS[0])];
+  if (!e || !e.meal_name || e.status === "out") return;
+  await saveEntry(dayKey, SLOTS[0], { ...e, source: e.source === "manual" ? "auto" : "manual" });
   render();
 }
+
+async function clearNight(dayKey) { await deleteEntry(dayKey, SLOTS[0]); render(); }
 
 async function toggleDayOut(dayKey) {
   const current = plan.days[dayKey] && plan.days[dayKey].is_out;
@@ -608,33 +548,45 @@ function buildShoppingList() {
  * ============================================================ */
 function render() {
   renderWeekNav();
-  renderEffort();
+  renderStats();
   renderGrid();
   renderShopping();
 }
 
-// Update the weekly-effort control: slider position, target label, and the
-// actual effort already planned into the visible week.
-function renderEffort() {
-  const slider = $("effort-slider");
-  const readout = $("effort-readout");
-  if (!slider || !readout) return;
-  slider.value = effortTarget;
-
-  let planned = 0, plannedNights = 0;
+// Summary chips in the planner hero: how many nights are locked (your picks),
+// rolled (auto-filled), empty, or a night off.
+function renderStats() {
+  const box = $("week-stats");
+  if (!box) return;
+  let locked = 0, rolled = 0, empty = 0, off = 0;
   DAYS.forEach((d) => {
     const st = cellState(d.key, SLOTS[0]);
-    if (st.out) return;
-    const eff = entryDifficulty(st.entry);
-    if (eff > 0) { planned += eff; plannedNights += 1; }
+    if (st.out) { off += 1; return; }
+    const e = st.entry;
+    if (!e || !e.meal_name) { empty += 1; return; }
+    if (e.source === "manual") locked += 1; else rolled += 1;
   });
-
-  let txt = `Target ${effortTarget} · ${effortDescriptor(effortTarget)}`;
-  if (plannedNights) txt += ` · this week ${planned}`;
-  readout.textContent = txt;
+  const chips = [];
+  if (locked) chips.push(`<span class="stat-chip locked">🔒 ${locked} locked</span>`);
+  if (rolled) chips.push(`<span class="stat-chip">🎲 ${rolled} rolled</span>`);
+  if (empty)  chips.push(`<span class="stat-chip">${empty} empty</span>`);
+  if (off)    chips.push(`<span class="stat-chip">${off} night${off === 1 ? "" : "s"} off</span>`);
+  box.innerHTML = chips.join("");
 }
 
 function renderWeekNav() { $("week-title").textContent = weekTitle(); }
+
+// A small inline-SVG-free action button for a planner row.
+function dayActionBtn(icon, label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "day-act";
+  b.textContent = icon;
+  b.title = label;
+  b.setAttribute("aria-label", label);
+  b.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(); });
+  return b;
+}
 
 function renderGrid() {
   const list = $("grid-body");
@@ -643,152 +595,234 @@ function renderGrid() {
   const todayIso = isoDate(new Date());
 
   DAYS.forEach((d) => {
+    const dateObj = dateForDay(d.key);
     const dayOut = plan.days[d.key] && plan.days[d.key].is_out;
 
-    const card = document.createElement("div");
-    card.className = "day-card";
-    if (isoDate(dateForDay(d.key)) === todayIso) card.classList.add("is-today");
+    const row = document.createElement("div");
+    row.className = "day-row";
+    if (isoDate(dateObj) === todayIso) row.classList.add("is-today");
 
-    // --- left marker: short day name + date ---
-    const dateObj = dateForDay(d.key);
-    const tab = document.createElement("div");
-    tab.className = "day-tab";
-    tab.innerHTML =
-      `<span class="day-name">${d.label.slice(0, 3)}</span>` +
-      `<span class="day-date">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>`;
-    card.appendChild(tab);
+    // left marker: short day name + date
+    const date = document.createElement("div");
+    date.className = "day-date";
+    date.innerHTML =
+      `<span class="d-name">${d.label.slice(0, 3).toUpperCase()}</span>` +
+      `<span class="d-num">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>`;
+    row.appendChild(date);
 
-    // --- meal cell ---
-    const cell = document.createElement("div");
-    cell.className = "cell day-meal";
+    const st = cellState(d.key, slot);
 
-    // whole day marked out of the planner
+    // ---- whole day marked out of the planner ----
     if (dayOut) {
+      row.classList.add("is-off");
       const note = plan.days[d.key].note;
-      cell.classList.add("cell-out", "day-out");
-      const body = document.createElement("div");
-      body.className = "cell-body";
-      body.innerHTML = `<span class="out-label">🚫 Out of the planner</span>${note ? `<span class="out-note">${escapeHtml(note)}</span>` : ""}`;
-      cell.appendChild(body);
-      const back = document.createElement("button");
-      back.className = "day-out-btn";
-      back.type = "button";
-      back.title = "Bring this day back into the planner";
-      back.setAttribute("aria-label", back.title);
-      back.textContent = "↩";
-      back.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
-      cell.appendChild(back);
-      card.appendChild(cell);
-      list.appendChild(card);
+      const main = document.createElement("div");
+      main.className = "day-main day-off-label";
+      main.innerHTML =
+        `<span class="off-title">Night off</span>` +
+        `<span class="off-note">${note ? escapeHtml(note) : "Skipped by rolls and left off the shopping list."}</span>`;
+      row.appendChild(main);
+      const back = dayActionBtn("↩", "Bring this day back into the planner", () => toggleDayOut(d.key));
+      row.appendChild(back);
+      row.addEventListener("click", () => toggleDayOut(d.key));
+      list.appendChild(row);
       return;
     }
 
-    const st = cellState(d.key, slot);
-    const meal = st.entry && st.entry.meal_name ? mealByName(st.entry.meal_name) : null;
+    const entry = st.entry;
+    const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
     const isTreat = meal && meal.location !== "Home";
-    if (isTreat) cell.classList.add("is-treat");
-    if (st.out) cell.classList.add("cell-out");
-    if (selected && selected.day === d.key && selected.slot === slot) cell.classList.add("is-selected");
+    const outCell = st.out; // slot-level "eating out" marker
 
-    const body = document.createElement("div");
-    body.className = "cell-body";
-    if (st.out) {
-      body.innerHTML = `<span class="out-label">🚫 Eating out</span>${st.note ? `<span class="out-note">${escapeHtml(st.note)}</span>` : ""}`;
-    } else if (st.entry && st.entry.meal_name) {
-      const txt = document.createElement("span");
-      txt.className = "cell-text";
-      txt.textContent = entryText(st.entry);
-      body.appendChild(txt);
+    const main = document.createElement("div");
+    main.className = "day-main";
+
+    if (outCell) {
+      row.classList.add("is-off");
+      main.classList.add("day-off-label");
+      main.innerHTML =
+        `<span class="off-title">Night off</span>` +
+        `<span class="off-note">${st.note ? escapeHtml(st.note) : "Eating out — left off the shopping list."}</span>`;
+    } else if (entry && entry.meal_name) {
+      if (isTreat) row.classList.add("is-treat");
+      const title = document.createElement("div");
+      title.className = "day-meal";
+      title.textContent = entry.meal_name;
+      main.appendChild(title);
+
+      const tags = document.createElement("div");
+      tags.className = "day-tags";
       if (isTreat) {
-        const tag = document.createElement("span");
-        tag.className = "badge";
-        tag.textContent = meal.location === "Takeaway" ? "Takeaway" : "Eating out";
-        body.appendChild(tag);
-      } else if (meal && mealUsesExpiringStock(meal)) {
-        const tag = document.createElement("span");
-        tag.className = "badge badge-expiring";
-        tag.textContent = "🕒 use soon";
-        tag.title = "Uses cupboard stock that's expiring soon";
-        body.appendChild(tag);
+        tags.innerHTML = `<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`;
+      } else {
+        const bits = [`<span class="tag">Home</span>`];
+        if (meal) bits.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(meal)))}</span>`);
+        if (entry.sides && entry.sides.length) bits.push(`<span class="tag">With ${escapeHtml(entry.sides.join(", "))}</span>`);
+        if (meal && mealUsesExpiringStock(meal)) bits.push(`<span class="tag expiring">🕒 use soon</span>`);
+        tags.innerHTML = bits.join("");
       }
+      main.appendChild(tags);
     } else {
-      cell.classList.add("empty");
-      body.innerHTML = '<span class="cell-text muted">＋ add a meal</span>';
+      row.classList.add("is-empty");
+      main.innerHTML =
+        `<div class="day-meal dim">Nothing planned</div>` +
+        `<div class="day-hint">Pick something, or let the dice decide.</div>`;
     }
-    cell.appendChild(body);
+    row.appendChild(main);
 
-    // right-side actions: pencil (pick exactly) + ⋯ (mark whole day out)
+    // ---- lock pill / pick button ----
+    if (entry && entry.meal_name && !outCell) {
+      const lock = document.createElement("button");
+      lock.type = "button";
+      lock.className = "lock-btn" + (isLocked(entry) ? " locked" : "");
+      lock.textContent = isLocked(entry) ? "🔒 Your pick" : "🎲 Rolled · keep";
+      lock.title = isLocked(entry) ? "Locked — unlock to let rolls change it" : "Rolled — lock it as your pick";
+      lock.addEventListener("click", (ev) => { ev.stopPropagation(); toggleLock(d.key); });
+      row.appendChild(lock);
+    } else if (!outCell) {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick-btn";
+      pick.textContent = "Pick a meal";
+      pick.addEventListener("click", (ev) => { ev.stopPropagation(); openPicker(d.key, slot); });
+      row.appendChild(pick);
+    }
+
+    // ---- action cluster (desktop) ----
     const actions = document.createElement("div");
-    actions.className = "cell-actions";
+    actions.className = "day-actions";
+    actions.appendChild(dayActionBtn("🎲", `Roll ${d.label}`, () => rollNight(d.key)));
+    actions.appendChild(dayActionBtn("✨", `Make ${d.label} a treat`, () => treatNight(d.key)));
+    actions.appendChild(dayActionBtn("🚫", `Mark ${d.label} as a night off`, () => toggleDayOut(d.key)));
+    if (entry && entry.meal_name)
+      actions.appendChild(dayActionBtn("✕", `Clear ${d.label}`, () => clearNight(d.key)));
+    row.appendChild(actions);
 
-    const edit = document.createElement("button");
-    edit.className = "cell-edit";
-    edit.type = "button";
-    edit.setAttribute("aria-label", `Choose ${d.label} dinner`);
-    edit.textContent = "✏️";
-    edit.addEventListener("click", (ev) => { ev.stopPropagation(); selected = { day: d.key, slot }; openPicker(d.key, slot); });
-    actions.appendChild(edit);
-
-    const outBtn = document.createElement("button");
-    outBtn.className = "day-out-btn";
-    outBtn.type = "button";
-    outBtn.title = "Mark this day out (away / eating out)";
-    outBtn.setAttribute("aria-label", outBtn.title);
-    outBtn.textContent = "⋯";
-    outBtn.addEventListener("click", (ev) => { ev.stopPropagation(); toggleDayOut(d.key); });
-    actions.appendChild(outBtn);
-
-    cell.appendChild(actions);
-
-    // Tap the meal to select the day (tap again to deselect).
-    cell.addEventListener("click", () => {
-      const same = selected && selected.day === d.key && selected.slot === slot;
-      selected = same ? null : { day: d.key, slot };
-      render();
-    });
-    card.appendChild(cell);
-    list.appendChild(card);
+    // Tap the row to open the plan-a-night sheet.
+    row.addEventListener("click", () => openPicker(d.key, slot));
+    list.appendChild(row);
   });
-
-  renderActionBar();
 }
 
-// Swap the bottom bar between whole-week actions and the selected day's actions.
-function renderActionBar() {
-  const barWeek = $("bar-week");
-  const barDay = $("bar-day");
-  if (!barWeek || !barDay) return;
-  if (selected) {
-    const dayLabel = DAYS.find((x) => x.key === selected.day).label;
-    $("bar-day-label").textContent = dayLabel;
-    barWeek.hidden = true;
-    barDay.hidden = false;
-  } else {
-    barWeek.hidden = false;
-    barDay.hidden = true;
-  }
+/* The "got it" ticks and any extra items are remembered per week on this
+ * device (no login needed, no database change). */
+function shopStateKey() { return "dp-shop-" + isoDate(weekStart); }
+function loadShopState() {
+  try { const s = JSON.parse(localStorage.getItem(shopStateKey())); return s && typeof s === "object" ? s : {}; }
+  catch (_) { return {}; }
+}
+function saveShopState(s) { try { localStorage.setItem(shopStateKey(), JSON.stringify(s)); } catch (_) {} }
+function shopExtras() { const s = loadShopState(); return Array.isArray(s.extras) ? s.extras : []; }
+function shopDoneSet() { const s = loadShopState(); return new Set(Array.isArray(s.done) ? s.done : []); }
+
+function addShopExtra(label) {
+  const clean = (label || "").trim();
+  if (!clean) return;
+  const s = loadShopState();
+  s.extras = shopExtras();
+  if (!s.extras.some((x) => x.toLowerCase() === clean.toLowerCase())) s.extras.push(clean);
+  saveShopState(s);
+  renderShopping();
+}
+function removeShopExtra(label) {
+  const s = loadShopState();
+  s.extras = shopExtras().filter((x) => x !== label);
+  saveShopState(s);
+  renderShopping();
+}
+function toggleShopDone(key) {
+  const s = loadShopState();
+  const done = shopDoneSet();
+  if (done.has(key)) done.delete(key); else done.add(key);
+  s.done = [...done];
+  saveShopState(s);
+  renderShopping();
+}
+function untickAllShop() {
+  const s = loadShopState();
+  s.done = [];
+  saveShopState(s);
+  renderShopping();
+}
+
+// The full list of shopping rows for the week: meal ingredients + your extras.
+function shoppingRows() {
+  const rows = buildShoppingList().map((it) => ({
+    key: "m:" + it.label.toLowerCase(),
+    label: cap(it.label),
+    qty: it.count > 1 ? "×" + it.count : "",
+    sub: [...it.meals].join(", "),
+    extra: false,
+  }));
+  shopExtras().forEach((label) => rows.push({
+    key: "x:" + label.toLowerCase(), label: cap(label), qty: "", sub: "Added by you", extra: true,
+  }));
+  return rows;
 }
 
 function renderShopping() {
-  const list = buildShoppingList();
   const box = $("shopping-body");
   const count = $("shopping-count");
-  box.innerHTML = "";
-  if (list.length === 0) {
+  const progWrap = $("shopping-progress-wrap");
+  if (!box) return;
+
+  const rows = shoppingRows();
+  const done = shopDoneSet();
+
+  if (rows.length === 0) {
     box.innerHTML = '<p class="muted empty-note">Your shopping list will appear here once there are meals in the week.</p>';
-    count.textContent = "";
+    if (count) count.textContent = weekTitle();
+    if (progWrap) progWrap.hidden = true;
     return;
   }
-  count.textContent = `${list.length} item${list.length === 1 ? "" : "s"}`;
-  list.forEach((it) => {
-    const row = document.createElement("div");
-    row.className = "shop-row";
-    row.innerHTML =
-      `<span class="shop-name">${escapeHtml(cap(it.label))}</span>` +
-      `<span class="shop-qty">×${it.count}</span>` +
-      `<span class="shop-meal">${escapeHtml([...it.meals].join(", "))}</span>`;
-    box.appendChild(row);
-  });
+
+  const gotCount = rows.filter((r) => done.has(r.key)).length;
+  if (count) count.textContent = `${weekTitle()} · ${rows.length} item${rows.length === 1 ? "" : "s"}`;
+
+  if (progWrap) {
+    progWrap.hidden = false;
+    $("shop-progress-label").textContent = `${gotCount} of ${rows.length} in the basket`;
+    $("shop-progress-bar").style.width = Math.round((gotCount / rows.length) * 100) + "%";
+  }
+
+  const toGet = rows.filter((r) => !done.has(r.key));
+  const got = rows.filter((r) => done.has(r.key));
+
+  const rowHtml = (r) => `
+    <div class="shop-row${done.has(r.key) ? " is-done" : ""}" data-key="${escapeHtml(r.key)}">
+      <span class="shop-check">✓</span>
+      <span class="shop-main">
+        <span class="shop-name">${escapeHtml(r.label)}</span>
+        ${r.sub ? `<span class="shop-meal">${escapeHtml(r.sub)}</span>` : ""}
+      </span>
+      ${r.qty ? `<span class="shop-qty">${escapeHtml(r.qty)}</span>` : ""}
+      ${r.extra ? `<button class="icon-btn shop-del" data-del="${escapeHtml(r.label)}" aria-label="Remove ${escapeHtml(r.label)}">🗑</button>` : ""}
+    </div>`;
+
+  let html = "";
+  if (toGet.length) {
+    html += `<div class="shop-group"><div class="shop-group-head">To get</div>${toGet.map(rowHtml).join("")}</div>`;
+  }
+  if (got.length) {
+    html += `<div class="shop-group"><div class="shop-group-head done">Got it · ${got.length}</div>${got.map(rowHtml).join("")}</div>`;
+  }
+  box.innerHTML = html;
+}
+
+// Copy the still-to-get items to the clipboard as a plain text list.
+async function copyShoppingList() {
+  const done = shopDoneSet();
+  const lines = shoppingRows()
+    .filter((r) => !done.has(r.key))
+    .map((r) => "• " + r.label + (r.qty ? " " + r.qty : ""));
+  if (!lines.length) { flash("Nothing left to get."); return; }
+  const text = `Shopping — ${weekTitle()}\n` + lines.join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    flash("List copied.");
+  } catch (_) {
+    flash("Couldn't copy — try Print instead.");
+  }
 }
 
 function escapeHtml(s) {
@@ -1027,27 +1061,35 @@ async function deleteMeal() {
   renderMealsList();
 }
 
+let mealTypeFilter = "all"; // all | home | treat
+
 function renderMealsList() {
   const box = $("meals-list");
   box.innerHTML = "";
   if (!MEALS.length) { box.innerHTML = '<p class="muted empty-note">No meals yet — add your first one.</p>'; return; }
   const q = mealFilter.trim().toLowerCase();
-  const shown = MEALS.slice().sort(byName).filter((m) => !q || m.name.toLowerCase().includes(q));
-  if (!shown.length) { box.innerHTML = '<p class="muted empty-note">No meals match your search.</p>'; return; }
+  const shown = MEALS.slice().sort(byName).filter((m) => {
+    if (q && !m.name.toLowerCase().includes(q)) return false;
+    if (mealTypeFilter === "home" && m.location !== "Home") return false;
+    if (mealTypeFilter === "treat" && m.location === "Home") return false;
+    return true;
+  });
+  if (!shown.length) { box.innerHTML = '<p class="muted empty-note">No meals match.</p>'; return; }
   shown.forEach((m) => {
     const row = document.createElement("button");
     row.className = "meal-row";
     row.type = "button";
     const treat = m.location !== "Home";
-    const bits = [];
-    if (treat) bits.push(escapeHtml(m.location));
-    else bits.push("Home");
-    if (!treat) bits.push(escapeHtml(effortLabel(mealDifficulty(m))));
-    if (m.sides && m.sides.length) bits.push(m.sides.length + " side" + (m.sides.length === 1 ? "" : "s"));
+    const tags = [];
+    if (treat) tags.push(`<span class="tag treat">✨ ${escapeHtml(m.location)}</span>`);
+    else {
+      tags.push(`<span class="tag">Home</span>`);
+      tags.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(m)))}</span>`);
+    }
+    if (m.sides && m.sides.length) tags.push(`<span class="tag">${m.sides.length} side${m.sides.length === 1 ? "" : "s"}</span>`);
     row.innerHTML =
-      `<span class="meal-row-main"><span class="meal-row-name">${escapeHtml(m.name)}</span>` +
-      `<span class="meal-row-sub">${bits.join(" · ")}</span></span>` +
-      `<span class="meal-row-edit">✏️</span>`;
+      `<span class="meal-row-name">${escapeHtml(m.name)}</span>` +
+      `<span class="meal-row-tags">${tags.join("")}</span>`;
     row.addEventListener("click", () => openMealEditor(m));
     box.appendChild(row);
   });
@@ -1087,6 +1129,7 @@ function renderSidesList() {
  * ============================================================ */
 let CUPBOARD = [];
 let cupFilter = "";
+let cupLocFilter = "all"; // all | Fridge | Freezer | Cupboard
 let cupScanner = null, cupScanning = false, cupPaused = false;
 let cupLastCode = null, cupLastTime = 0, cupAudio = null;
 
@@ -1321,7 +1364,8 @@ function renderCupboard() {
   const q = cupFilter.trim().toLowerCase();
   const match = (it) => !q || [it.product_name, it.ingredient_name, it.brand, it.barcode]
     .some((v) => (v || "").toLowerCase().includes(q));
-  const items = CUPBOARD.filter(match);
+  const locMatch = (it) => cupLocFilter === "all" || (it.location || "Cupboard") === cupLocFilter;
+  const items = CUPBOARD.filter((it) => match(it) && locMatch(it));
 
   const totalUnits = CUPBOARD.reduce((s, it) => s + (it.quantity || 0), 0);
   if (count) count.textContent = CUPBOARD.length
@@ -1474,10 +1518,8 @@ function switchTab(name) {
   $("tab-meals").hidden = name !== "meals";
   $("tab-sides").hidden = name !== "sides";
   $("tab-cupboard").hidden = name !== "cupboard";
-  // The bottom action bar belongs to the planner only.
-  $("action-bar").hidden = name !== "planner";
-  document.body.classList.toggle("bar-open", name === "planner");
   if (name !== "cupboard") cupStopScan(); // never leave the camera running in the background
+  window.scrollTo(0, 0);
   if (name === "shopping") renderShopping();
   if (name === "meals") renderMealsList();
   if (name === "sides") renderSidesList();
@@ -1486,7 +1528,6 @@ function switchTab(name) {
 
 async function gotoWeek(newStart) {
   weekStart = newStart;
-  selected = null;
   await loadPlan();
   render();
 }
@@ -1499,11 +1540,9 @@ function showView(which) {
   $("view-auth").hidden = which !== "auth";
   $("view-app").hidden = which !== "app";
   $("account").hidden = which !== "app";
-  // The fixed action bar must never hang over the loading or sign-in screens.
-  if (which !== "app") {
-    $("action-bar").hidden = true;
-    document.body.classList.remove("bar-open");
-  }
+  // The bottom nav only belongs to the signed-in app.
+  const bn = $("bottom-nav");
+  if (bn) bn.hidden = which !== "app";
 }
 
 async function handleSession(session) {
@@ -1523,14 +1562,13 @@ let booted = false;
 async function boot() {
   if (booted) return;
   booted = true;
-  effortTarget = loadEffortTarget();
   await resolveHousehold();
   await loadMeals();
   await loadSideOptions();
   await loadCupboard();
   await loadPlan();
   render();
-  switchTab("planner"); // reveal the planner's bottom action bar
+  switchTab("planner");
 }
 
 function wireUp() {
@@ -1552,9 +1590,17 @@ function wireUp() {
   // Tabs
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
-  // Meals-tab search
+  // Meals-tab search + type filter pills
   const mealSearch = $("meals-search");
   if (mealSearch) mealSearch.addEventListener("input", () => { mealFilter = mealSearch.value; renderMealsList(); });
+  const mealsFilter = $("meals-filter");
+  if (mealsFilter) mealsFilter.addEventListener("click", (e) => {
+    const pill = e.target.closest("[data-mfilter]");
+    if (!pill) return;
+    mealTypeFilter = pill.dataset.mfilter;
+    mealsFilter.querySelectorAll(".pill").forEach((p) => p.classList.toggle("is-active", p === pill));
+    renderMealsList();
+  });
 
   // Sides tab — add a side
   const sideForm = $("side-add-form");
@@ -1580,6 +1626,14 @@ function wireUp() {
     if (cupSearch) cupSearch.addEventListener("input", () => { cupFilter = cupSearch.value; renderCupboard(); });
     $("cup-list").addEventListener("change", cupOnListChange);
     $("cup-list").addEventListener("click", cupOnListClick);
+    const cupTabs = $("cup-loc-tabs");
+    if (cupTabs) cupTabs.addEventListener("click", (e) => {
+      const pill = e.target.closest("[data-loc]");
+      if (!pill) return;
+      cupLocFilter = pill.dataset.loc;
+      cupTabs.querySelectorAll(".pill").forEach((p) => p.classList.toggle("is-active", p === pill));
+      renderCupboard();
+    });
   }
 
   // Week nav
@@ -1587,32 +1641,32 @@ function wireUp() {
   $("week-next").addEventListener("click", () => gotoWeek(addDays(weekStart, 7)));
   $("week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
 
-  // Weekly effort slider — as you drag, re-pick the auto-filled nights live so
-  // the week tracks the new budget. Database writes are debounced (and flushed
-  // on release) so a drag doesn't hammer the server.
-  const effortSlider = $("effort-slider");
-  if (effortSlider) {
-    effortSlider.min = String(EFFORT_MIN);
-    effortSlider.max = String(EFFORT_MAX);
-    effortSlider.addEventListener("input", () => {
-      saveEffortTarget(parseInt(effortSlider.value, 10));
-      const updates = rebalanceAutoSlots();
-      updates.forEach((u) => { plan.entries[ekey(u.day, u.slot)] = entryRow(u.day, u.slot, u.entry); });
-      render();
-      if (updates.length) scheduleRebalancePersist(updates);
-    });
-    effortSlider.addEventListener("change", flushRebalance);
-  }
+  // Planner actions (lock / roll)
+  $("btn-roll-empty").addEventListener("click", rollEmptyNights);
+  $("btn-reroll").addEventListener("click", reRollUnlocked);
+  $("btn-clear").addEventListener("click", clearUnlocked);
 
-  // Planner actions
-  $("btn-generate").addEventListener("click", generateWeek);
-  $("btn-swap").addEventListener("click", swapSelected);
-  $("btn-treat-cell").addEventListener("click", treatSelected);
-  $("btn-treat-week").addEventListener("click", treatWeek);
-  $("btn-edit").addEventListener("click", editSelected);
+  // Shopping list — check-off, extras, copy, print
   $("btn-print").addEventListener("click", () => window.print());
-  $("btn-clear").addEventListener("click", clearWeek);
-  $("bar-deselect").addEventListener("click", () => { selected = null; render(); });
+  const untick = $("btn-untick");
+  if (untick) untick.addEventListener("click", untickAllShop);
+  const copyBtn = $("btn-copy");
+  if (copyBtn) copyBtn.addEventListener("click", copyShoppingList);
+  const extraForm = $("extra-add-form");
+  if (extraForm) extraForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("extra-add-input");
+    addShopExtra(input.value);
+    input.value = "";
+    input.focus();
+  });
+  const shopBody = $("shopping-body");
+  if (shopBody) shopBody.addEventListener("click", (e) => {
+    const del = e.target.closest("[data-del]");
+    if (del) { e.stopPropagation(); removeShopExtra(del.dataset.del); return; }
+    const row = e.target.closest(".shop-row");
+    if (row && row.dataset.key) toggleShopDone(row.dataset.key);
+  });
 
   // Picker — searchable meal dropdown
   const search = $("pick-search");

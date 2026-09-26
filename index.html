@@ -2,25 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dinner Planner</title>
-  <meta name="description" content="Plan the week's dinners, roll the dice on meals, treat yourself, mark days out, and get an automatic shopping list." />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Dinners</title>
+  <meta name="description" content="Plan the week's dinners — lock your picks, roll the rest, treat yourself, mark nights off, and get an automatic shopping list." />
+  <meta name="theme-color" content="#0c0c10" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>" />
 </head>
 <body>
+  <!-- ===== Top header (brand + desktop nav + account) ===== -->
   <header class="site-header">
     <div class="wrap header-inner">
-      <div class="brand">
-        <span class="brand-mark">🍽️</span>
-        <div>
-          <h1>Dinner Planner</h1>
-          <p class="tagline">Roll the week, treat yourself, shop smart.</p>
-        </div>
-      </div>
+      <div class="brand">D<span>I</span>NNERS</div>
+
+      <nav class="tabs tabs-top" aria-label="Main">
+        <button class="tab is-active" data-tab="planner">Week</button>
+        <button class="tab" data-tab="meals">Meals</button>
+        <button class="tab" data-tab="cupboard">Cupboard</button>
+        <button class="tab" data-tab="sides">Sides</button>
+        <button class="tab" data-tab="shopping">Shopping</button>
+      </nav>
+
+      <div class="header-spacer"></div>
+
       <div id="account" class="account" hidden>
         <span id="account-email" class="account-email"></span>
         <button id="btn-signout" class="btn btn-ghost btn-sm">Sign out</button>
@@ -36,11 +43,12 @@
   <!-- ===== Sign-in ===== -->
   <main id="view-auth" class="wrap center-view" hidden>
     <div class="card auth-card">
-      <h2>Sign in</h2>
+      <div class="eyebrow">Welcome back</div>
+      <h2 class="display">Sign in</h2>
       <p class="muted">Enter your email and we'll send you a one-tap login link. No password to remember.</p>
       <form id="auth-form">
-        <input id="auth-email" class="select" type="email" placeholder="you@example.com" autocomplete="email" required />
-        <button class="btn btn-primary" type="submit" id="auth-submit">Send login link</button>
+        <input id="auth-email" class="input" type="email" placeholder="you@example.com" autocomplete="email" required />
+        <button class="btn btn-primary btn-block" type="submit" id="auth-submit">Send login link</button>
       </form>
       <p id="auth-msg" class="auth-msg" hidden></p>
     </div>
@@ -48,187 +56,228 @@
 
   <!-- ===== App ===== -->
   <main id="view-app" class="wrap" hidden>
-    <nav class="tabs">
-      <button class="tab is-active" data-tab="planner">📅 Planner</button>
-      <button class="tab" data-tab="shopping">🛒 Shopping</button>
-      <button class="tab" data-tab="meals">🍲 Meals</button>
-      <button class="tab" data-tab="sides">🥗 Sides</button>
-      <button class="tab" data-tab="cupboard">🧺 Cupboard</button>
-    </nav>
 
     <!-- ---- Planner tab ---- -->
     <section id="tab-planner" class="tab-panel">
-      <div class="week-nav">
-        <button id="week-prev" class="btn btn-ghost" aria-label="Previous week">‹</button>
-        <div class="week-label">
-          <strong id="week-title">This week</strong>
-          <button id="week-today" class="link-btn">Go to this week</button>
+      <div class="page-head">
+        <div class="page-head-text">
+          <div class="eyebrow">PDVSN · Dinners</div>
+          <h1 class="display page-title">This week, <span class="accent">sorted</span>.</h1>
+          <div id="week-stats" class="stat-chips"></div>
         </div>
-        <button id="week-next" class="btn btn-ghost" aria-label="Next week">›</button>
+        <div class="week-nav">
+          <button id="week-prev" class="round-btn" aria-label="Previous week">‹</button>
+          <div class="week-label">
+            <strong id="week-title">This week</strong>
+            <button id="week-today" class="link-btn">Go to this week</button>
+          </div>
+          <button id="week-next" class="round-btn" aria-label="Next week">›</button>
+        </div>
       </div>
 
-      <div class="effort-panel">
-        <div class="effort-head">
-          <span class="effort-title">🍳 Weekly effort</span>
-          <span id="effort-readout" class="effort-readout"></span>
-        </div>
-        <input id="effort-slider" class="effort-slider" type="range" min="7" max="35" step="1"
-               aria-label="Weekly effort budget" />
-        <div class="effort-scale"><span>Chill</span><span>Balanced</span><span>Full-on</span></div>
-        <p class="effort-note">Sets how hard the week's cooking is when you tap Generate.</p>
+      <div class="week-actions">
+        <button id="btn-clear" class="btn btn-ghost">Clear unlocked</button>
+        <button id="btn-reroll" class="btn btn-outline">↻ Re-roll unlocked</button>
+        <button id="btn-roll-empty" class="btn btn-primary">🎲 Roll empty nights</button>
       </div>
 
-      <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
+      <div class="planner-layout">
+        <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
+
+        <aside class="planner-aside">
+          <div class="card note-card">
+            <div class="note-ico" aria-hidden="true">🔒</div>
+            <div>
+              <div class="note-title">Your picks are safe</div>
+              <div class="note-body">Anything you choose yourself locks automatically. Rolling only fills empty or unlocked nights.</div>
+            </div>
+          </div>
+        </aside>
+      </div>
     </section>
 
     <!-- ---- Shopping tab ---- -->
     <section id="tab-shopping" class="tab-panel" hidden>
-      <div class="card shopping">
-        <div class="shopping-head">
-          <h2>🛒 Shopping list</h2>
-          <span id="shopping-count" class="count"></span>
+      <div class="page-head">
+        <div class="page-head-text">
+          <div class="eyebrow">Your list</div>
+          <h1 class="display page-title">Shopping</h1>
+          <div id="shopping-count" class="page-sub"></div>
         </div>
-        <div id="shopping-body" class="shopping-body"></div>
+        <button id="btn-copy" class="btn btn-outline btn-sm">⧉ Copy list</button>
       </div>
+
+      <div id="shopping-progress-wrap" class="shop-progress-wrap" hidden>
+        <div class="shop-progress-top">
+          <span id="shop-progress-label"></span>
+          <button id="btn-untick" class="link-btn">Untick all</button>
+        </div>
+        <div class="shop-progress-track"><div id="shop-progress-bar" class="shop-progress-bar"></div></div>
+      </div>
+
+      <form id="extra-add-form" class="inline-add">
+        <input id="extra-add-input" class="input" type="text" placeholder="Add something extra" autocomplete="off" />
+        <button class="icon-add" type="submit" aria-label="Add to list">＋</button>
+      </form>
+
+      <div id="shopping-body" class="shopping-body"></div>
       <p class="foot"><button id="btn-print" class="link-btn">🖨️ Print this list</button></p>
     </section>
 
     <!-- ---- Meals tab ---- -->
     <section id="tab-meals" class="tab-panel" hidden>
-      <div class="meals-head">
-        <h2>Your meals</h2>
-        <button id="btn-add-meal" class="btn btn-primary">＋ Add meal</button>
+      <div class="page-head">
+        <div class="page-head-text">
+          <div class="eyebrow">Your library</div>
+          <h1 class="display page-title">Meals</h1>
+        </div>
+        <button id="btn-add-meal" class="btn btn-primary">＋ New meal</button>
       </div>
-      <input id="meals-search" class="select meals-search" type="search"
-             placeholder="🔍 Search meals…" autocomplete="off" aria-label="Search meals" />
+
+      <div class="search-row">
+        <input id="meals-search" class="input input-search" type="search"
+               placeholder="🔍 Search meals…" autocomplete="off" aria-label="Search meals" />
+      </div>
+      <div id="meals-filter" class="pill-filter" role="tablist" aria-label="Filter meals">
+        <button class="pill is-active" data-mfilter="all" role="tab">All</button>
+        <button class="pill" data-mfilter="home" role="tab">Home cooked</button>
+        <button class="pill" data-mfilter="treat" role="tab">Treats</button>
+      </div>
       <div id="meals-list" class="meals-list"></div>
     </section>
 
     <!-- ---- Sides tab ---- -->
     <section id="tab-sides" class="tab-panel" hidden>
-      <div class="meals-head">
-        <h2>Sides</h2>
+      <div class="page-head">
+        <div class="page-head-text">
+          <div class="eyebrow">Shared list</div>
+          <h1 class="display page-title">Sides</h1>
+          <div class="page-sub">Rolled alongside meals that allow them. Tick which go with each meal in the meal editor.</div>
+        </div>
       </div>
-      <p class="muted" style="margin-top:0">Your shared list of side dishes. Tick which ones go with each meal in the meal editor.</p>
-      <form id="side-add-form" class="side-add">
-        <input id="side-add-input" class="select" type="text" placeholder="Add a side (e.g. mash)" autocomplete="off" />
-        <button class="btn btn-primary" type="submit">＋ Add</button>
+      <form id="side-add-form" class="inline-add">
+        <input id="side-add-input" class="input" type="text" placeholder="Add a side, e.g. Coleslaw" autocomplete="off" />
+        <button class="icon-add" type="submit" aria-label="Add side">＋</button>
       </form>
       <div id="sides-list" class="sides-list"></div>
     </section>
 
     <!-- ---- Cupboard tab ---- -->
     <section id="tab-cupboard" class="tab-panel" hidden>
-      <div class="meals-head">
-        <h2>Cupboard</h2>
-        <span id="cup-count" class="count"></span>
+      <div class="page-head">
+        <div class="page-head-text">
+          <div class="eyebrow">In stock</div>
+          <h1 class="display page-title">Cup<span class="accent">board</span></h1>
+          <div id="cup-count" class="page-sub"></div>
+        </div>
       </div>
-      <p class="muted" style="margin-top:0">Scan food barcodes to keep track of what's in stock. Items are grouped by <strong>where they live</strong> — set each one's spot (cupboard, fridge, freezer…) and an optional category. Give each a <strong>recipe name</strong> so meal suggestions can use up anything expiring soon.</p>
+
+      <p class="muted cup-intro">Scan food barcodes to keep track of what's in stock. Items are grouped by <strong>where they live</strong> — set each one's spot and an optional category. Give each a <strong>recipe name</strong> so meal suggestions can use up anything expiring soon.</p>
 
       <div class="cup-actions">
         <button id="cup-scan" class="btn btn-primary">📷 Start scanning</button>
-        <button id="cup-photo" class="btn btn-ghost">🖼️ Scan a photo</button>
+        <button id="cup-photo" class="btn btn-outline">🖼️ Scan a photo</button>
       </div>
       <input id="cup-photo-input" type="file" accept="image/*" hidden />
-      <div id="cup-reader"></div>
+      <div id="cup-reader" class="cup-reader"></div>
       <div id="cup-filescan" hidden></div>
       <p id="cup-status" class="cup-status muted"></p>
 
-      <input id="cup-search" class="select meals-search" type="search"
+      <input id="cup-search" class="input input-search" type="search"
              placeholder="🔍 Search cupboard…" autocomplete="off" aria-label="Search cupboard" />
+      <div id="cup-loc-tabs" class="pill-filter" role="tablist" aria-label="Filter by location">
+        <button class="pill is-active" data-loc="all" role="tab">All</button>
+        <button class="pill" data-loc="Fridge" role="tab">Fridge</button>
+        <button class="pill" data-loc="Freezer" role="tab">Freezer</button>
+        <button class="pill" data-loc="Cupboard" role="tab">Cupboard</button>
+      </div>
       <div id="cup-list" class="cup-list"></div>
     </section>
   </main>
 
-  <!-- ===== Bottom action bar (Planner) ===== -->
-  <div id="action-bar" class="action-bar" hidden>
-    <div class="wrap action-bar-inner">
-      <!-- Default: whole-week actions -->
-      <div id="bar-week" class="bar-group">
-        <button id="btn-generate" class="bar-btn is-primary">
-          <span class="bar-ico">🎲</span><span class="bar-lbl">Generate</span>
-        </button>
-        <button id="btn-treat-week" class="bar-btn is-treat">
-          <span class="bar-ico">🎉</span><span class="bar-lbl">Treat week</span>
-        </button>
-        <button id="btn-clear" class="bar-btn">
-          <span class="bar-ico">🧹</span><span class="bar-lbl">Clear</span>
-        </button>
-      </div>
+  <!-- ===== Bottom nav (mobile) ===== -->
+  <nav id="bottom-nav" class="tabs tabs-bottom" aria-label="Main" hidden>
+    <button class="tab is-active" data-tab="planner">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="2"></rect><path d="M4 10h16M9 3v4M15 3v4"></path></svg>
+      <span>Week</span>
+    </button>
+    <button class="tab" data-tab="meals">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"></path><path d="M9 9h6"></path></svg>
+      <span>Meals</span>
+    </button>
+    <button class="tab" data-tab="cupboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"></path><path d="M8 9v6M11 9v6M14 9v6M17 9v6"></path></svg>
+      <span>Cupboard</span>
+    </button>
+    <button class="tab" data-tab="sides">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="4"></circle></svg>
+      <span>Sides</span>
+    </button>
+    <button class="tab" data-tab="shopping">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l-1 13H7z"></path><path d="M9 7a3 3 0 0 1 6 0"></path></svg>
+      <span>Shop</span>
+    </button>
+  </nav>
 
-      <!-- When a day is selected: that day's actions -->
-      <div id="bar-day" class="bar-group" hidden>
-        <button id="bar-deselect" class="bar-btn bar-back" aria-label="Deselect day">
-          <span class="bar-ico">‹</span>
-        </button>
-        <span id="bar-day-label" class="bar-day-label"></span>
-        <button id="btn-swap" class="bar-btn">
-          <span class="bar-ico">🔀</span><span class="bar-lbl">Swap</span>
-        </button>
-        <button id="btn-treat-cell" class="bar-btn is-treat">
-          <span class="bar-ico">✨</span><span class="bar-lbl">Treat</span>
-        </button>
-        <button id="btn-edit" class="bar-btn is-primary">
-          <span class="bar-ico">✏️</span><span class="bar-lbl">Edit</span>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== Meal picker ===== -->
+  <!-- ===== Plan-a-night sheet (meal picker) ===== -->
   <div id="modal" class="modal-overlay" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="sheet-grip" aria-hidden="true"></div>
       <div class="modal-head">
-        <h2 id="modal-title">Choose a meal</h2>
-        <button id="modal-close" class="icon-btn" aria-label="Close">✕</button>
+        <h2 id="modal-title" class="display">Choose a meal</h2>
+        <button id="modal-close" class="round-btn" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <label class="field-label" for="pick-search">Meal</label>
+        <div class="quick-row">
+          <button id="pick-random" class="quick-btn">🎲<span>Roll for me</span></button>
+          <button id="pick-treat" class="quick-btn is-treat">✨<span>Treat night</span></button>
+          <button id="pick-out" class="quick-btn">🚫<span>Night off</span></button>
+        </div>
+
+        <label class="field-label" for="pick-search">Search your meals</label>
         <div id="pick-combo" class="combo">
           <input type="hidden" id="pick-meal" />
-          <input id="pick-search" class="select combo-input" type="text"
+          <input id="pick-search" class="input" type="text"
                  placeholder="Search meals…" autocomplete="off"
                  role="combobox" aria-expanded="false" aria-controls="pick-list" />
           <div id="pick-list" class="combo-list" role="listbox" hidden></div>
         </div>
         <div id="pick-sides-wrap" class="sides-wrap">
           <div class="field-label">Sides <span id="pick-hint" class="hint-inline"></span></div>
-          <div id="pick-sides" class="sides"></div>
+          <div id="pick-sides" class="chip-set"></div>
         </div>
-        <div class="quick-row">
-          <button id="pick-random" class="btn btn-ghost">🎲 Random</button>
-          <button id="pick-treat" class="btn btn-ghost">✨ Treat</button>
-          <button id="pick-out" class="btn btn-ghost">🚫 Mark out</button>
-          <button id="pick-clear" class="btn btn-ghost">🧹 Clear this cell</button>
+        <div class="quick-row quick-row-sm">
+          <button id="pick-clear" class="btn btn-ghost btn-sm">🧹 Clear this night</button>
         </div>
       </div>
       <div class="modal-foot">
         <button id="pick-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="pick-save" class="btn btn-primary">Save</button>
+        <button id="pick-save" class="btn btn-primary">Save pick</button>
       </div>
     </div>
   </div>
 
   <!-- ===== Meal editor ===== -->
   <div id="meal-modal" class="modal-overlay" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="meal-modal-title">
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="meal-modal-title">
+      <div class="sheet-grip" aria-hidden="true"></div>
       <div class="modal-head">
-        <h2 id="meal-modal-title">Add meal</h2>
-        <button id="meal-modal-close" class="icon-btn" aria-label="Close">✕</button>
+        <h2 id="meal-modal-title" class="display">Add meal</h2>
+        <button id="meal-modal-close" class="round-btn" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <label class="field-label" for="m-name">Name</label>
-        <input id="m-name" class="select" type="text" placeholder="e.g. Meatballs" />
+        <label class="field-label" for="m-name">What's it called?</label>
+        <input id="m-name" class="input" type="text" placeholder="e.g. Meatballs" />
 
-        <label class="field-label" for="m-location">Where</label>
-        <select id="m-location" class="select">
+        <label class="field-label" for="m-location">Where's it from?</label>
+        <select id="m-location" class="input">
           <option value="Home">Home (cooked)</option>
           <option value="Takeaway">Takeaway (treat)</option>
           <option value="Eating Out">Eating Out (treat)</option>
         </select>
 
-        <label class="field-label" for="m-effort">Effort to make</label>
-        <select id="m-effort" class="select">
+        <label class="field-label" for="m-effort">How much effort?</label>
+        <select id="m-effort" class="input">
           <option value="1">Very easy</option>
           <option value="2">Easy</option>
           <option value="3">Medium</option>
@@ -237,30 +286,30 @@
         </select>
 
         <div class="field-label">Sides it can have <span class="hint-inline">(manage the list on the Sides tab)</span></div>
-        <div id="m-sides-box" class="sides"></div>
+        <div id="m-sides-box" class="chip-set"></div>
 
         <div class="grid-2">
           <div>
             <label class="field-label" for="m-min">Fewest sides</label>
-            <input id="m-min" class="select" type="number" min="0" value="0" />
+            <input id="m-min" class="input" type="number" min="0" value="0" />
           </div>
           <div>
             <label class="field-label" for="m-max">Most sides</label>
-            <input id="m-max" class="select" type="number" min="0" value="0" />
+            <input id="m-max" class="input" type="number" min="0" value="0" />
           </div>
         </div>
 
-        <div class="field-label">Allowed on</div>
-        <div id="m-days" class="sides"></div>
+        <div class="field-label">Which nights can it go on?</div>
+        <div id="m-days" class="chip-set"></div>
 
         <label class="field-label" for="m-ingredients">Shopping items <span class="hint-inline">(comma separated)</span></label>
-        <input id="m-ingredients" class="select" type="text" placeholder="meatballs, gravy" />
+        <input id="m-ingredients" class="input" type="text" placeholder="meatballs, gravy" />
       </div>
       <div class="modal-foot">
         <button id="meal-delete" class="btn btn-ghost danger" hidden>Delete</button>
         <span class="spacer"></span>
         <button id="meal-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="meal-save" class="btn btn-primary">Save</button>
+        <button id="meal-save" class="btn btn-primary">Save meal</button>
       </div>
     </div>
   </div>
