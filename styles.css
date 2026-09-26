@@ -214,6 +214,13 @@ main.wrap { padding-top: 24px; padding-bottom: 48px; }
   padding: 1px 8px;
   vertical-align: middle;
 }
+/* "use soon" badge on a planned meal that uses expiring cupboard stock */
+.badge-expiring {
+  color: var(--brand-dark);
+  background: var(--brand-tint);
+  text-transform: none;
+  letter-spacing: 0;
+}
 
 /* ---------- shopping list ---------- */
 .shopping-head {
@@ -767,6 +774,25 @@ body.bar-open { padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
 .cup-controls { display: flex; align-items: flex-end; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
 .cup-field { display: flex; flex-direction: column; }
 .cup-field .select { padding: 8px 10px; }
+.cup-field-cat { flex: 1 1 120px; }
+.cup-field-cat .select { width: 100%; }
+
+/* Location group headers in the cupboard list */
+.cup-group-head {
+  display: flex; align-items: center; gap: 8px;
+  margin: 18px 0 4px; padding-bottom: 4px;
+}
+.cup-group-head:first-child { margin-top: 4px; }
+.cup-group-head h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+.cup-group-count {
+  font-size: .72rem; font-weight: 700; color: var(--ink-soft);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px;
+}
+.cup-cat-chip {
+  font-size: .72rem; font-weight: 600; color: var(--brand-dark);
+  background: var(--brand-tint); border-radius: 999px; padding: 2px 8px;
+}
 
 .cup-qty { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--bg-soft); }
 .cup-qty button { border: 0; background: transparent; color: var(--ink); font-size: 1.1rem; font-weight: 700; padding: 8px 14px; cursor: pointer; }
