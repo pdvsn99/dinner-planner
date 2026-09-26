@@ -53,6 +53,7 @@
       <button class="tab" data-tab="shopping">🛒 Shopping</button>
       <button class="tab" data-tab="meals">🍲 Meals</button>
       <button class="tab" data-tab="sides">🥗 Sides</button>
+      <button class="tab" data-tab="cupboard">🧺 Cupboard</button>
     </nav>
 
     <!-- ---- Planner tab ---- -->
@@ -114,6 +115,28 @@
         <button class="btn btn-primary" type="submit">＋ Add</button>
       </form>
       <div id="sides-list" class="sides-list"></div>
+    </section>
+
+    <!-- ---- Cupboard tab ---- -->
+    <section id="tab-cupboard" class="tab-panel" hidden>
+      <div class="meals-head">
+        <h2>Cupboard</h2>
+        <span id="cup-count" class="count"></span>
+      </div>
+      <p class="muted" style="margin-top:0">Scan food barcodes to keep track of what's in stock. Give each a <strong>recipe name</strong> so meals know what you've got.</p>
+
+      <div class="cup-actions">
+        <button id="cup-scan" class="btn btn-primary">📷 Start scanning</button>
+        <button id="cup-photo" class="btn btn-ghost">🖼️ Scan a photo</button>
+      </div>
+      <input id="cup-photo-input" type="file" accept="image/*" hidden />
+      <div id="cup-reader"></div>
+      <div id="cup-filescan" hidden></div>
+      <p id="cup-status" class="cup-status muted"></p>
+
+      <input id="cup-search" class="select meals-search" type="search"
+             placeholder="🔍 Search cupboard…" autocomplete="off" aria-label="Search cupboard" />
+      <div id="cup-list" class="cup-list"></div>
     </section>
   </main>
 
@@ -243,9 +266,11 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="cup-flash" aria-hidden="true"></div>
 
   <script src="config.js"></script>
   <script src="meals.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
