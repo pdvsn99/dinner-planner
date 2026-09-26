@@ -1024,6 +1024,334 @@ function renderSidesList() {
 }
 
 /* ============================================================
+ *  Cupboard (barcode scanning -> cupboard_items)
+ * ============================================================ */
+let CUPBOARD = [];
+let cupFilter = "";
+let cupScanner = null, cupScanning = false, cupPaused = false;
+let cupLastCode = null, cupLastTime = 0, cupAudio = null;
+
+const CUP_FULLNESS = ["", "Full", "3/4", "1/2", "1/4", "Nearly empty"];
+const CUP_FULL_PCT = { "Full": 100, "3/4": 75, "1/2": 50, "1/4": 25, "Nearly empty": 10 };
+
+/* ---- data layer ---- */
+async function loadCupboard() {
+  const { data, error } = await sb.from("cupboard_items").select("*")
+    .eq("household_id", HOUSEHOLD_ID).order("created_at", { ascending: false });
+  if (error) { console.error(error); CUPBOARD = []; return; }
+  CUPBOARD = data || [];
+}
+async function insertCupboardItem(row) {
+  const { data, error } = await sb.from("cupboard_items")
+    .insert({ ...row, household_id: HOUSEHOLD_ID, user_id: USER_ID, source: "cupboard-scanner" })
+    .select().single();
+  if (error) { flash("Couldn't save item."); console.error(error); return null; }
+  CUPBOARD.unshift(data);
+  return data;
+}
+async function updateCupboardItem(id, patch) {
+  const { data, error } = await sb.from("cupboard_items")
+    .update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id).select().single();
+  if (error) { flash("Couldn't update."); console.error(error); return; }
+  const i = CUPBOARD.findIndex((x) => x.id === id);
+  if (i >= 0 && data) CUPBOARD[i] = data;
+}
+async function deleteCupboardItem(id) {
+  const { error } = await sb.from("cupboard_items").delete().eq("id", id);
+  if (error) { flash("Couldn't delete."); console.error(error); return; }
+  CUPBOARD = CUPBOARD.filter((x) => x.id !== id);
+}
+
+/* ---- helpers ---- */
+function cupParseSize(s) {
+  if (!s) return { value: null, unit: null };
+  const m = String(s).match(/([\d]+(?:\.[\d]+)?)\s*(kg|g|ml|l|pcs)\b/i);
+  if (!m) return { value: null, unit: null };
+  let v = parseFloat(m[1]); let u = m[2].toLowerCase();
+  if (u === "kg") { v *= 1000; u = "g"; } else if (u === "l") { v *= 1000; u = "ml"; }
+  return { value: v, unit: u };
+}
+function cupFullnessPatch(v) {
+  return {
+    fullness: v || null,
+    fullness_pct: (v in CUP_FULL_PCT) ? CUP_FULL_PCT[v] : null,
+    opened: v ? (v !== "Full") : null,
+    low_stock: v ? (v === "1/4" || v === "Nearly empty") : null,
+  };
+}
+function cupLookup(code) {
+  const url = "https://world.openfoodfacts.org/api/v2/product/" +
+    encodeURIComponent(code) + ".json?fields=product_name,brands,quantity";
+  return fetch(url).then((r) => r.json()).then((d) => {
+    if (d && d.status === 1 && d.product) {
+      return {
+        name: (d.product.product_name || "").trim(),
+        brand: (d.product.brands || "").split(",")[0].trim(),
+        size: (d.product.quantity || "").trim(),
+      };
+    }
+    return null;
+  }).catch(() => null);
+}
+// Days until a YYYY-MM-DD date (negative = already past). null if no date.
+function cupDaysToExpiry(d) {
+  if (!d) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const exp = new Date(d + "T00:00:00");
+  return Math.round((exp - today) / 864e5);
+}
+
+/* ---- feedback (beep + flash) ---- */
+function cupEnsureAudio() {
+  try {
+    if (!cupAudio) cupAudio = new (window.AudioContext || window.webkitAudioContext)();
+    if (cupAudio.state === "suspended") cupAudio.resume();
+  } catch (_) {}
+}
+function cupBeep() {
+  if (!cupAudio) return;
+  try {
+    const t = cupAudio.currentTime;
+    const o = cupAudio.createOscillator(), g = cupAudio.createGain();
+    o.type = "square"; o.connect(g); g.connect(cupAudio.destination);
+    o.frequency.setValueAtTime(1046, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    o.start(t); o.stop(t + 0.27);
+  } catch (_) {}
+}
+function cupFlashScreen() {
+  const f = $("cup-flash");
+  if (!f) return;
+  f.classList.remove("show"); void f.offsetWidth; f.classList.add("show");
+}
+function cupFeedback() {
+  try { if (navigator.vibrate) navigator.vibrate([40, 30, 40]); } catch (_) {}
+  cupBeep(); cupFlashScreen();
+}
+function cupSetStatus(msg, cls) {
+  const el = $("cup-status");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = "cup-status" + (cls ? " " + cls : " muted");
+}
+
+/* ---- scanning ---- */
+function cupStartScan() {
+  if (cupScanning) { cupStopScan(); return; }
+  cupEnsureAudio();
+  cupLastCode = null; cupPaused = false;
+  if (typeof Html5Qrcode === "undefined") {
+    cupSetStatus("Scanner didn't load — check your connection and reload.", "err");
+    return;
+  }
+  cupScanner = new Html5Qrcode("cup-reader", {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+    ],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+  });
+  const qrbox = (vw, vh) => ({ width: Math.floor(vw * 0.9), height: Math.floor(vh * 0.72) });
+  const config = {
+    fps: 15, qrbox,
+    videoConstraints: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+  };
+  cupScanner.start({ facingMode: "environment" }, config,
+    (text) => cupOnDecode(text.trim()), () => {}
+  ).then(() => {
+    cupScanning = true;
+    $("cup-scan").textContent = "■ Stop scanning";
+    cupSetStatus("Point at a barcode — it scans automatically.");
+  }).catch((err) => {
+    cupSetStatus("Couldn't start the camera: " + err + ". Allow camera access and use the https link.", "err");
+  });
+}
+function cupStopScan() {
+  if (cupScanner && cupScanning) {
+    cupScanner.stop().then(() => cupScanner.clear()).catch(() => {});
+  }
+  cupScanning = false;
+  const b = $("cup-scan"); if (b) b.textContent = "📷 Start scanning";
+}
+function cupPauseBriefly() {
+  if (!cupScanner || !cupScanning) return;
+  try {
+    cupScanner.pause(true);
+    cupPaused = true;
+    setTimeout(() => {
+      cupPaused = false;
+      if (cupScanner && cupScanning) { try { cupScanner.resume(); } catch (_) {} }
+    }, 1600);
+  } catch (_) {}
+}
+function cupOnDecode(code) {
+  if (cupPaused) return;
+  const now = Date.now();
+  if (code === cupLastCode && now - cupLastTime < 3500) return;
+  cupLastCode = code; cupLastTime = now;
+  cupCommit(code);
+  cupPauseBriefly();
+}
+function cupDecodePhoto(file) {
+  if (!file) return;
+  cupEnsureAudio();
+  if (typeof Html5Qrcode === "undefined") { cupSetStatus("Scanner didn't load — reload the page.", "err"); return; }
+  cupSetStatus("Reading photo…");
+  const fs = new Html5Qrcode("cup-filescan", {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+    ],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+  });
+  const done = () => { try { fs.clear(); } catch (_) {} };
+  fs.scanFileV2(file, false).then((res) => {
+    const code = (res && res.decodedText ? res.decodedText : "").trim();
+    done();
+    if (code) cupCommit(code);
+    else cupSetStatus("No barcode found — try again, filling the frame with just the barcode.", "err");
+  }).catch(() => { done(); cupSetStatus("No barcode found — get closer, straight on, in focus.", "err"); });
+}
+// Add one scanned container as its own row, then fill in details from the database.
+async function cupCommit(code) {
+  const known = CUPBOARD.find((x) => x.barcode === code && x.product_name);
+  cupFeedback();
+  const row = await insertCupboardItem({
+    barcode: code,
+    product_name: known ? known.product_name : null,
+    brand: known ? known.brand : null,
+    ingredient_name: known ? known.ingredient_name : null,
+    category: known ? known.category : null,
+    size_text: known ? known.size_text : null,
+    size_value: known ? known.size_value : null,
+    size_unit: known ? known.size_unit : null,
+    quantity: 1,
+    location: "Cupboard",
+  });
+  renderCupboard();
+  if (!row) return;
+  if (known) { cupSetStatus("Added another " + (known.product_name || code), "ok"); return; }
+  cupSetStatus("Added " + code + " — looking up…");
+  const info = await cupLookup(code);
+  if (info && info.name) {
+    const sz = cupParseSize(info.size);
+    await updateCupboardItem(row.id, {
+      product_name: info.name, brand: info.brand || null,
+      ingredient_name: info.name.toLowerCase(),
+      size_text: info.size || null, size_value: sz.value, size_unit: sz.unit,
+    });
+    renderCupboard();
+    cupSetStatus("Found: " + info.name + (info.size ? " (" + info.size + ")" : ""), "ok");
+  } else {
+    cupSetStatus("Added " + code + " — not in the database. Add a name and recipe name below.", "");
+  }
+}
+
+/* ---- rendering ---- */
+function renderCupboard() {
+  const box = $("cup-list");
+  const count = $("cup-count");
+  if (!box) return;
+  const q = cupFilter.trim().toLowerCase();
+  const match = (it) => !q || [it.product_name, it.ingredient_name, it.brand, it.barcode]
+    .some((v) => (v || "").toLowerCase().includes(q));
+  const items = CUPBOARD.filter(match).slice().sort((a, b) => {
+    const da = cupDaysToExpiry(a.expiry_date), db = cupDaysToExpiry(b.expiry_date);
+    if (da !== null && db !== null && da !== db) return da - db;
+    if (da !== null && db === null) return -1;
+    if (da === null && db !== null) return 1;
+    return (a.product_name || "").localeCompare(b.product_name || "");
+  });
+
+  const totalUnits = CUPBOARD.reduce((s, it) => s + (it.quantity || 0), 0);
+  if (count) count.textContent = CUPBOARD.length
+    ? `${CUPBOARD.length} item${CUPBOARD.length === 1 ? "" : "s"} · ${totalUnits} in stock` : "";
+
+  if (!CUPBOARD.length) {
+    box.innerHTML = '<p class="muted empty-note">Nothing here yet — tap “Start scanning” to add your first item.</p>';
+    return;
+  }
+  if (!items.length) { box.innerHTML = '<p class="muted empty-note">No cupboard items match your search.</p>'; return; }
+
+  box.innerHTML = items.map((it) => {
+    const days = cupDaysToExpiry(it.expiry_date);
+    let expTag = "";
+    if (days !== null) {
+      if (days < 0) expTag = '<span class="cup-badge past">Expired</span>';
+      else if (days <= 14) expTag = `<span class="cup-badge soon">${days === 0 ? "Today" : days + "d left"}</span>`;
+    }
+    const sub = [it.brand, it.size_text].filter(Boolean).map(escapeHtml).join(" · ");
+    const fullSel = CUP_FULLNESS.map((o) =>
+      `<option value="${o}"${it.fullness === o ? " selected" : ""}>${o || "How full?"}</option>`).join("");
+    return `<div class="cup-item" data-id="${it.id}">
+      <div class="cup-item-top">
+        <input class="cup-name select" data-field="product_name" value="${escapeHtml(it.product_name || "")}" placeholder="Product name" />
+        <button class="icon-btn cup-del" data-act="del" aria-label="Delete">🗑</button>
+      </div>
+      <label class="cup-lbl">Recipe name <span class="hint-inline">(matches your meals)</span></label>
+      <input class="cup-ing select" data-field="ingredient_name" value="${escapeHtml(it.ingredient_name || "")}" placeholder="e.g. curry sauce" />
+      <div class="cup-sub">${sub || `<span class="muted">${escapeHtml(it.barcode || "no barcode")}</span>`}${expTag}</div>
+      <div class="cup-controls">
+        <div class="cup-qty" aria-label="Quantity">
+          <button data-act="dec" aria-label="One fewer">−</button>
+          <b>${it.quantity || 0}</b>
+          <button data-act="inc" aria-label="One more">＋</button>
+        </div>
+        <div class="cup-field">
+          <label class="cup-lbl">How full</label>
+          <select class="select" data-field="fullness">${fullSel}</select>
+        </div>
+        <div class="cup-field">
+          <label class="cup-lbl">Use by</label>
+          <input class="select" type="date" data-field="expiry_date" value="${escapeHtml(it.expiry_date || "")}" />
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function cupItemId(el) {
+  const wrap = el.closest(".cup-item");
+  return wrap ? wrap.getAttribute("data-id") : null;
+}
+async function cupOnListChange(e) {
+  const el = e.target;
+  const field = el.getAttribute("data-field");
+  if (!field) return;
+  const id = cupItemId(el);
+  if (!id) return;
+  if (field === "fullness") {
+    await updateCupboardItem(id, cupFullnessPatch(el.value));
+    renderCupboard();
+  } else if (field === "expiry_date") {
+    await updateCupboardItem(id, { expiry_date: el.value || null });
+    renderCupboard();
+  } else if (field === "product_name" || field === "ingredient_name") {
+    // Persist text without re-rendering (keeps focus/caret).
+    await updateCupboardItem(id, { [field]: el.value.trim() || null });
+  }
+}
+async function cupOnListClick(e) {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const id = cupItemId(btn);
+  if (!id) return;
+  const it = CUPBOARD.find((x) => x.id === id);
+  if (!it) return;
+  const act = btn.getAttribute("data-act");
+  if (act === "inc") { await updateCupboardItem(id, { quantity: (it.quantity || 0) + 1 }); renderCupboard(); }
+  else if (act === "dec") { await updateCupboardItem(id, { quantity: Math.max(1, (it.quantity || 1) - 1) }); renderCupboard(); }
+  else if (act === "del") {
+    if (!confirm("Remove this item from the cupboard?")) return;
+    await deleteCupboardItem(id); renderCupboard();
+  }
+}
+
+/* ============================================================
  *  Tabs & week navigation
  * ============================================================ */
 function switchTab(name) {
@@ -1032,12 +1360,15 @@ function switchTab(name) {
   $("tab-shopping").hidden = name !== "shopping";
   $("tab-meals").hidden = name !== "meals";
   $("tab-sides").hidden = name !== "sides";
+  $("tab-cupboard").hidden = name !== "cupboard";
   // The bottom action bar belongs to the planner only.
   $("action-bar").hidden = name !== "planner";
   document.body.classList.toggle("bar-open", name === "planner");
+  if (name !== "cupboard") cupStopScan(); // never leave the camera running in the background
   if (name === "shopping") renderShopping();
   if (name === "meals") renderMealsList();
   if (name === "sides") renderSidesList();
+  if (name === "cupboard") renderCupboard();
 }
 
 async function gotoWeek(newStart) {
@@ -1083,6 +1414,7 @@ async function boot() {
   await resolveHousehold();
   await loadMeals();
   await loadSideOptions();
+  await loadCupboard();
   await loadPlan();
   render();
   switchTab("planner"); // reveal the planner's bottom action bar
@@ -1120,6 +1452,22 @@ function wireUp() {
     input.value = "";
     input.focus();
   });
+
+  // Cupboard
+  const cupScanBtn = $("cup-scan");
+  if (cupScanBtn) {
+    cupScanBtn.addEventListener("click", cupStartScan);
+    $("cup-photo").addEventListener("click", () => $("cup-photo-input").click());
+    $("cup-photo-input").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      cupDecodePhoto(f);
+      e.target.value = "";
+    });
+    const cupSearch = $("cup-search");
+    if (cupSearch) cupSearch.addEventListener("input", () => { cupFilter = cupSearch.value; renderCupboard(); });
+    $("cup-list").addEventListener("change", cupOnListChange);
+    $("cup-list").addEventListener("click", cupOnListClick);
+  }
 
   // Week nav
   $("week-prev").addEventListener("click", () => gotoWeek(addDays(weekStart, -7)));
