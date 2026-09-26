@@ -123,14 +123,59 @@ function shuffled(arr) {
 }
 // From a pool, pick a meal whose difficulty is closest to `want`.
 // Ties are broken at random so repeated Generates still feel fresh.
-function pickNearestDifficulty(pool, want) {
-  let best = Infinity, group = [];
-  pool.forEach((m) => {
-    const dist = Math.abs(mealDifficulty(m) - want);
-    if (dist < best - 1e-9) { best = dist; group = [m]; }
-    else if (Math.abs(dist - best) < 1e-9) group.push(m);
+// How soon (in days) counts as "expiring" for the meal-suggestion nudge.
+const EXPIRY_SOON_DAYS = 7;
+
+// Recipe names of cupboard items due to run out within EXPIRY_SOON_DAYS.
+// (Cupboard items carry an `ingredient_name` that matches a meal's ingredients.)
+function expiringIngredientSet() {
+  const set = new Set();
+  (typeof CUPBOARD !== "undefined" ? CUPBOARD : []).forEach((it) => {
+    const n = String(it.ingredient_name || "").toLowerCase().trim();
+    if (n.length < 3) return; // ignore blanks / tiny words that match everything
+    const days = cupDaysToExpiry(it.expiry_date);
+    if (days !== null && days >= 0 && days <= EXPIRY_SOON_DAYS) set.add(n);
   });
-  return rand(group);
+  return set;
+}
+// Does this meal use any ingredient that's expiring soon?
+function mealUsesExpiringStock(meal, set) {
+  const exp = set || expiringIngredientSet();
+  if (!exp.size) return false;
+  return (meal.ingredients || []).some((ing) => {
+    const n = String(ing || "").toLowerCase().trim();
+    if (!n) return false;
+    for (const s of exp) { if (n === s || n.includes(s) || s.includes(n)) return true; }
+    return false;
+  });
+}
+
+// Pick a meal whose effort is closest to `want`. Effort still leads: we only
+// look within a small tolerance of the ideal. As a gentle nudge, if any of
+// those meals would use up soon-to-expire stock, we prefer one of them (and,
+// when `usedNames` is given, one not already placed this week, so a whole
+// week doesn't collapse onto the same dish).
+function pickNearestDifficulty(pool, want, usedNames) {
+  if (!pool.length) return null;
+  let best = Infinity;
+  pool.forEach((m) => { best = Math.min(best, Math.abs(mealDifficulty(m) - want)); });
+
+  const TOL = 1.0;
+  const exp = expiringIngredientSet();
+  if (exp.size) {
+    let near = pool.filter((m) =>
+      Math.abs(mealDifficulty(m) - want) <= best + TOL && mealUsesExpiringStock(m, exp));
+    if (usedNames) {
+      const unused = near.filter((m) => !usedNames.has(m.name));
+      if (unused.length) near = unused;
+    }
+    if (near.length) return rand(near);
+  }
+
+  // No expiring stock in play (or none usable): original behaviour — a random
+  // pick from the meals whose effort ties for closest to the target.
+  const ties = pool.filter((m) => Math.abs(Math.abs(mealDifficulty(m) - want) - best) < 1e-9);
+  return rand(ties);
 }
 
 /* ---------- dates ---------- */
@@ -416,6 +461,7 @@ async function generateWeek() {
   // closest meal and subtract what it actually cost. Easy nights leave more
   // room for a hard one later, and vice-versa.
   const updates = [];
+  const usedNames = new Set();
   shuffled(slots).forEach((s) => {
     const avg = remainingSlots > 0 ? remainingBudget / remainingSlots : DEFAULT_DIFFICULTY;
     // Swing each night a little around the running average so a week isn't
@@ -423,7 +469,8 @@ async function generateWeek() {
     // *left*, an easy night frees up a harder one later — so the total
     // still lands near your target.
     const aim = avg + (Math.random() * 2 - 1) * 1.3;
-    const meal = pickNearestDifficulty(s.pool, aim);
+    const meal = pickNearestDifficulty(s.pool, aim, usedNames);
+    usedNames.add(meal.name);
     updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
     remainingBudget -= mealDifficulty(meal);
     remainingSlots -= 1;
@@ -438,6 +485,7 @@ async function generateWeek() {
 // budget, so the auto nights flex around them.
 function rebalanceAutoSlots() {
   const autoSlots = [];
+  const usedNames = new Set(); // don't let the expiry nudge repeat a dish
   let fixedEffort = 0, cookedNights = 0;
   DAYS.forEach((d) => {
     SLOTS.forEach((slot) => {
@@ -454,6 +502,7 @@ function rebalanceAutoSlots() {
         else fixedEffort += entryDifficulty(e);
       } else {
         fixedEffort += entryDifficulty(e); // person's choice — leave it, but count it
+        usedNames.add(e.meal_name); // and don't duplicate it on an auto night
       }
     });
   });
@@ -468,7 +517,8 @@ function rebalanceAutoSlots() {
   const updates = [];
   autoSlots.forEach((s) => {
     const aim = left > 0 ? remaining / left : DEFAULT_DIFFICULTY;
-    const meal = pickNearestDifficulty(s.pool, aim);
+    const meal = pickNearestDifficulty(s.pool, aim, usedNames);
+    usedNames.add(meal.name);
     updates.push({ day: s.day, slot: s.slot, entry: makeEntry(meal, "auto") });
     remaining -= mealDifficulty(meal);
     left -= 1;
@@ -650,6 +700,12 @@ function renderGrid() {
         const tag = document.createElement("span");
         tag.className = "badge";
         tag.textContent = meal.location === "Takeaway" ? "Takeaway" : "Eating out";
+        body.appendChild(tag);
+      } else if (meal && mealUsesExpiringStock(meal)) {
+        const tag = document.createElement("span");
+        tag.className = "badge badge-expiring";
+        tag.textContent = "🕒 use soon";
+        tag.title = "Uses cupboard stock that's expiring soon";
         body.appendChild(tag);
       }
     } else {
@@ -1032,6 +1088,9 @@ let cupScanner = null, cupScanning = false, cupPaused = false;
 let cupLastCode = null, cupLastTime = 0, cupAudio = null;
 
 const CUP_FULLNESS = ["", "Full", "3/4", "1/2", "1/4", "Nearly empty"];
+// Where an item lives. Scans default to "Cupboard"; the list groups by this,
+// and each item has a picker to move it. Order here sets the section order.
+const CUP_LOCATIONS = ["Cupboard", "Fridge", "Freezer", "Other"];
 const CUP_FULL_PCT = { "Full": 100, "3/4": 75, "1/2": 50, "1/4": 25, "Nearly empty": 10 };
 
 /* ---- data layer ---- */
@@ -1259,13 +1318,7 @@ function renderCupboard() {
   const q = cupFilter.trim().toLowerCase();
   const match = (it) => !q || [it.product_name, it.ingredient_name, it.brand, it.barcode]
     .some((v) => (v || "").toLowerCase().includes(q));
-  const items = CUPBOARD.filter(match).slice().sort((a, b) => {
-    const da = cupDaysToExpiry(a.expiry_date), db = cupDaysToExpiry(b.expiry_date);
-    if (da !== null && db !== null && da !== db) return da - db;
-    if (da !== null && db === null) return -1;
-    if (da === null && db !== null) return 1;
-    return (a.product_name || "").localeCompare(b.product_name || "");
-  });
+  const items = CUPBOARD.filter(match);
 
   const totalUnits = CUPBOARD.reduce((s, it) => s + (it.quantity || 0), 0);
   if (count) count.textContent = CUPBOARD.length
@@ -1277,17 +1330,59 @@ function renderCupboard() {
   }
   if (!items.length) { box.innerHTML = '<p class="muted empty-note">No cupboard items match your search.</p>'; return; }
 
-  box.innerHTML = items.map((it) => {
-    const days = cupDaysToExpiry(it.expiry_date);
-    let expTag = "";
-    if (days !== null) {
-      if (days < 0) expTag = '<span class="cup-badge past">Expired</span>';
-      else if (days <= 14) expTag = `<span class="cup-badge soon">${days === 0 ? "Today" : days + "d left"}</span>`;
-    }
-    const sub = [it.brand, it.size_text].filter(Boolean).map(escapeHtml).join(" · ");
-    const fullSel = CUP_FULLNESS.map((o) =>
-      `<option value="${o}"${it.fullness === o ? " selected" : ""}>${o || "How full?"}</option>`).join("");
-    return `<div class="cup-item" data-id="${it.id}">
+  // Group by location (main grouping), then sort items inside each group by
+  // expiry (soonest first), then name.
+  const byExpiryThenName = (a, b) => {
+    const da = cupDaysToExpiry(a.expiry_date), db = cupDaysToExpiry(b.expiry_date);
+    if (da !== null && db !== null && da !== db) return da - db;
+    if (da !== null && db === null) return -1;
+    if (da === null && db !== null) return 1;
+    return (a.product_name || "").localeCompare(b.product_name || "");
+  };
+  const groups = new Map();
+  items.forEach((it) => {
+    const loc = it.location || "Cupboard";
+    if (!groups.has(loc)) groups.set(loc, []);
+    groups.get(loc).push(it);
+  });
+  // Known locations first (in CUP_LOCATIONS order), then any others A–Z.
+  const groupOrder = [...groups.keys()].sort((a, b) => {
+    const ia = CUP_LOCATIONS.indexOf(a), ib = CUP_LOCATIONS.indexOf(b);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  const LOC_ICON = { Cupboard: "🗄️", Fridge: "🧊", Freezer: "❄️", Other: "📦" };
+  box.innerHTML = groupOrder.map((loc) => {
+    const rows = groups.get(loc).slice().sort(byExpiryThenName);
+    const header = `<div class="cup-group-head">
+      <h3>${LOC_ICON[loc] || "📦"} ${escapeHtml(loc)}</h3>
+      <span class="cup-group-count">${rows.length}</span>
+    </div>`;
+    return header + rows.map(cupItemHtml).join("");
+  }).join("");
+}
+
+// One cupboard-item card.
+function cupItemHtml(it) {
+  const days = cupDaysToExpiry(it.expiry_date);
+  let expTag = "";
+  if (days !== null) {
+    if (days < 0) expTag = '<span class="cup-badge past">Expired</span>';
+    else if (days <= 14) expTag = `<span class="cup-badge soon">${days === 0 ? "Today" : days + "d left"}</span>`;
+  }
+  const subBits = [it.brand, it.size_text].filter(Boolean).map(escapeHtml);
+  if (it.category) subBits.push(`<span class="cup-cat-chip">${escapeHtml(it.category)}</span>`);
+  const sub = subBits.join(" · ");
+  const fullSel = CUP_FULLNESS.map((o) =>
+    `<option value="${o}"${it.fullness === o ? " selected" : ""}>${o || "How full?"}</option>`).join("");
+  const cur = it.location || "Cupboard";
+  const locOpts = CUP_LOCATIONS.map((o) =>
+    `<option value="${o}"${cur === o ? " selected" : ""}>${o}</option>`).join("") +
+    (CUP_LOCATIONS.includes(cur) ? "" : `<option value="${escapeHtml(cur)}" selected>${escapeHtml(cur)}</option>`);
+  return `<div class="cup-item" data-id="${it.id}">
       <div class="cup-item-top">
         <input class="cup-name select" data-field="product_name" value="${escapeHtml(it.product_name || "")}" placeholder="Product name" />
         <button class="icon-btn cup-del" data-act="del" aria-label="Delete">🗑</button>
@@ -1302,6 +1397,10 @@ function renderCupboard() {
           <button data-act="inc" aria-label="One more">＋</button>
         </div>
         <div class="cup-field">
+          <label class="cup-lbl">Where</label>
+          <select class="select" data-field="location">${locOpts}</select>
+        </div>
+        <div class="cup-field">
           <label class="cup-lbl">How full</label>
           <select class="select" data-field="fullness">${fullSel}</select>
         </div>
@@ -1309,9 +1408,12 @@ function renderCupboard() {
           <label class="cup-lbl">Use by</label>
           <input class="select" type="date" data-field="expiry_date" value="${escapeHtml(it.expiry_date || "")}" />
         </div>
+        <div class="cup-field cup-field-cat">
+          <label class="cup-lbl">Category</label>
+          <input class="select" data-field="category" value="${escapeHtml(it.category || "")}" placeholder="e.g. Tins" />
+        </div>
       </div>
     </div>`;
-  }).join("");
 }
 
 function cupItemId(el) {
@@ -1329,6 +1431,14 @@ async function cupOnListChange(e) {
     renderCupboard();
   } else if (field === "expiry_date") {
     await updateCupboardItem(id, { expiry_date: el.value || null });
+    renderCupboard();
+  } else if (field === "location") {
+    // Re-render: the item moves to a different location group.
+    await updateCupboardItem(id, { location: el.value || "Cupboard" });
+    renderCupboard();
+  } else if (field === "category") {
+    // Re-render so the category chip updates (change fires on blur).
+    await updateCupboardItem(id, { category: el.value.trim() || null });
     renderCupboard();
   } else if (field === "product_name" || field === "ingredient_name") {
     // Persist text without re-rendering (keeps focus/caret).
