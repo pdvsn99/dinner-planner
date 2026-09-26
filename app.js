@@ -125,6 +125,8 @@ function shuffled(arr) {
 // Ties are broken at random so repeated Generates still feel fresh.
 // How soon (in days) counts as "expiring" for the meal-suggestion nudge.
 const EXPIRY_SOON_DAYS = 7;
+// How many days past the use-by date an item can still count toward the nudge.
+const EXPIRY_GRACE_DAYS = 3;
 
 // Recipe names of cupboard items due to run out within EXPIRY_SOON_DAYS.
 // (Cupboard items carry an `ingredient_name` that matches a meal's ingredients.)
@@ -134,7 +136,8 @@ function expiringIngredientSet() {
     const n = String(it.ingredient_name || "").toLowerCase().trim();
     if (n.length < 3) return; // ignore blanks / tiny words that match everything
     const days = cupDaysToExpiry(it.expiry_date);
-    if (days !== null && days >= 0 && days <= EXPIRY_SOON_DAYS) set.add(n);
+    // Include items expiring soon and up to EXPIRY_GRACE_DAYS already past.
+    if (days !== null && days >= -EXPIRY_GRACE_DAYS && days <= EXPIRY_SOON_DAYS) set.add(n);
   });
   return set;
 }
@@ -1090,7 +1093,7 @@ let cupLastCode = null, cupLastTime = 0, cupAudio = null;
 const CUP_FULLNESS = ["", "Full", "3/4", "1/2", "1/4", "Nearly empty"];
 // Where an item lives. Scans default to "Cupboard"; the list groups by this,
 // and each item has a picker to move it. Order here sets the section order.
-const CUP_LOCATIONS = ["Cupboard", "Fridge", "Freezer", "Other"];
+const CUP_LOCATIONS = ["Cupboard", "Fridge", "Freezer"];
 const CUP_FULL_PCT = { "Full": 100, "3/4": 75, "1/2": 50, "1/4": 25, "Nearly empty": 10 };
 
 /* ---- data layer ---- */
@@ -1354,7 +1357,7 @@ function renderCupboard() {
     return a.localeCompare(b);
   });
 
-  const LOC_ICON = { Cupboard: "🗄️", Fridge: "🧊", Freezer: "❄️", Other: "📦" };
+  const LOC_ICON = { Cupboard: "🗄️", Fridge: "🧊", Freezer: "❄️" };
   box.innerHTML = groupOrder.map((loc) => {
     const rows = groups.get(loc).slice().sort(byExpiryThenName);
     const header = `<div class="cup-group-head">
