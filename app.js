@@ -399,10 +399,9 @@ async function seedMeals() {
     user_id: USER_ID,
     household_id: HOUSEHOLD_ID,
     name: m.name,
-    category: m.category,
+    category: "Dinner", // kept for the database column; lunch no longer exists
     location: m.location || "Home",
-    ease: m.ease || null,
-    difficulty: EASE_TO_DIFFICULTY[(m.ease || "").toLowerCase()] || DEFAULT_DIFFICULTY,
+    difficulty: m.difficulty || DEFAULT_DIFFICULTY,
     sides: m.sides || [],
     always_sides: m.always || [],
     min_sides: m.min || 0,
