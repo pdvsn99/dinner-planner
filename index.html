@@ -152,7 +152,7 @@
         <div class="page-head-text">
           <div class="eyebrow">Shared list</div>
           <h1 class="display page-title">Sides</h1>
-          <div class="page-sub">Rolled alongside meals that allow them. Tick which go with each meal in the meal editor.</div>
+          <div class="page-sub">Rolled alongside meals that allow them. Add what to buy for each side so the shopping list knows (e.g. mash = potatoes, butter, milk).</div>
         </div>
       </div>
       <form id="side-add-form" class="inline-add">
@@ -285,16 +285,16 @@
           <option value="5">Very hard</option>
         </select>
 
-        <div class="field-label">Sides it can have <span class="hint-inline">(manage the list on the Sides tab)</span></div>
+        <div class="field-label">Sides <span class="hint-inline">(tap once = maybe, twice = ★ always, three times = off)</span></div>
         <div id="m-sides-box" class="chip-set"></div>
 
         <div class="grid-2">
           <div>
-            <label class="field-label" for="m-min">Fewest sides</label>
+            <label class="field-label" for="m-min">Fewest "maybe" sides</label>
             <input id="m-min" class="input" type="number" min="0" value="0" />
           </div>
           <div>
-            <label class="field-label" for="m-max">Most sides</label>
+            <label class="field-label" for="m-max">Most "maybe" sides</label>
             <input id="m-max" class="input" type="number" min="0" value="0" />
           </div>
         </div>
@@ -302,7 +302,7 @@
         <div class="field-label">Which nights can it go on?</div>
         <div id="m-days" class="chip-set"></div>
 
-        <label class="field-label" for="m-ingredients">Shopping items <span class="hint-inline">(comma separated)</span></label>
+        <label class="field-label" for="m-ingredients">Shopping items for the main <span class="hint-inline">(comma separated — sides add their own)</span></label>
         <input id="m-ingredients" class="input" type="text" placeholder="meatballs, gravy" />
       </div>
       <div class="modal-foot">

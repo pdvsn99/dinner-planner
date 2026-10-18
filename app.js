@@ -51,6 +51,23 @@ function pickSides(pool, n) {
   return out;
 }
 function mealByName(name) { return MEALS.find((m) => m.name === name); }
+// A meal's sides come in two kinds: "always" sides that come with it every
+// time (mash for bangers and mash), and "maybe" sides the planner picks a few
+// of at random. Older meals only have the "maybe" list.
+function alwaysSides(meal) { return (meal && meal.always_sides) || []; }
+function maybeSides(meal) {
+  const always = new Set(alwaysSides(meal));
+  return ((meal && meal.sides) || []).filter((s) => !always.has(s));
+}
+function sideByName(name) {
+  const k = (name || "").trim().toLowerCase();
+  return SIDE_OPTIONS.find((s) => s.name.toLowerCase() === k);
+}
+// What to buy for a side: its own ingredients, or just its name if none set.
+function sideShopping(name) {
+  const side = sideByName(name);
+  return side && side.ingredients && side.ingredients.length ? side.ingredients : [name];
+}
 
 /* ---------- effort / difficulty ----------
  * Every meal has a difficulty of 1..5, stored as a number in the database
@@ -144,7 +161,7 @@ function expiringIngredientSet() {
 function mealUsesExpiringStock(meal, set) {
   const exp = set || expiringIngredientSet();
   if (!exp.size) return false;
-  return (meal.ingredients || []).some((ing) => {
+  return [...(meal.ingredients || []), ...alwaysSides(meal).flatMap(sideShopping)].some((ing) => {
     const n = String(ing || "").toLowerCase().trim();
     if (!n) return false;
     for (const s of exp) { if (n === s || n.includes(s) || s.includes(n)) return true; }
@@ -221,7 +238,7 @@ function makeEntry(meal, source) {
   return {
     status: "planned",
     meal_name: meal.name,
-    sides: pickSides(meal.sides || [], n),
+    sides: [...alwaysSides(meal), ...pickSides(maybeSides(meal), n)],
     note: null,
     source: source || "manual",
     // Only home-cooked meals carry an effort cost; treats don't count.
@@ -306,6 +323,15 @@ async function addSideOption(name) {
   renderSidesList();
 }
 
+async function saveSideIngredients(side, text) {
+  const ingredients = splitList(text);
+  if (ingredients.join(",") === (side.ingredients || []).join(",")) return;
+  const { error } = await sb.from("side_options").update({ ingredients }).eq("id", side.id);
+  if (error) { flash("Couldn't save side."); console.error(error); return; }
+  side.ingredients = ingredients;
+  flash(`Saved what to buy for ${side.name}.`);
+}
+
 async function deleteSideOption(id) {
   const { error } = await sb.from("side_options").delete().eq("id", id);
   if (error) { flash("Couldn't remove side."); console.error(error); return; }
@@ -323,6 +349,7 @@ async function seedMeals() {
     ease: m.ease || null,
     difficulty: EASE_TO_DIFFICULTY[(m.ease || "").toLowerCase()] || DEFAULT_DIFFICULTY,
     sides: m.sides || [],
+    always_sides: m.always || [],
     min_sides: m.min || 0,
     max_sides: m.max || 0,
     days: m.days || [],
@@ -339,13 +366,17 @@ async function seedMeals() {
     if (error) console.error("seed error", error);
   }
 
-  // Seed the sides library from every distinct side the starter meals use.
+  // Seed the sides library from every distinct side the starter meals use,
+  // with what to buy for each one from DEFAULT_SIDES.
   const names = new Set();
-  (window.DEFAULT_MEALS || []).forEach((m) => (m.sides || []).forEach((s) => {
+  (window.DEFAULT_MEALS || []).forEach((m) => [...(m.sides || []), ...(m.always || [])].forEach((s) => {
     const n = (s || "").trim();
     if (n) names.add(n);
   }));
-  const sideRows = [...names].map((name) => ({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name }));
+  const sideIngredients = window.DEFAULT_SIDES || {};
+  const sideRows = [...names].map((name) => ({
+    household_id: HOUSEHOLD_ID, user_id: USER_ID, name, ingredients: sideIngredients[name] || [],
+  }));
   if (sideRows.length) {
     const { error } = await sb.from("side_options").insert(sideRows);
     if (error) console.error("side seed error", error); // non-fatal (e.g. already seeded)
@@ -530,7 +561,7 @@ function buildShoppingList() {
       const st = cellState(d.key, slot);
       if (st.out || !st.entry || !st.entry.meal_name) return;
       const meal = mealByName(st.entry.meal_name);
-      const parts = [...((meal && meal.ingredients) || []), ...(st.entry.sides || [])];
+      const parts = [...((meal && meal.ingredients) || []), ...(st.entry.sides || []).flatMap(sideShopping)];
       parts.forEach((p) => {
         const key = (p || "").trim().toLowerCase();
         if (!key) return;
@@ -896,7 +927,7 @@ function chooseComboMeal(name) {
   hidden.dataset.label = name;
   $("pick-search").value = name;
   closeComboList();
-  renderSideChoices(name, []);
+  renderSideChoices(name, alwaysSides(mealByName(name)));
 }
 
 function openPicker(dayKey, slot) {
@@ -921,13 +952,17 @@ function renderSideChoices(mealName, chosen) {
   const hint = $("pick-hint");
   box.innerHTML = "";
   const meal = mealByName(mealName);
-  if (!meal || !meal.sides || !meal.sides.length) { wrap.style.display = "none"; return; }
+  const always = alwaysSides(meal);
+  const all = [...always, ...maybeSides(meal)];
+  if (!meal || !all.length) { wrap.style.display = "none"; return; }
   wrap.style.display = "";
-  hint.textContent = meal.min_sides === meal.max_sides
-    ? (meal.max_sides === 0 ? "" : `(usually ${meal.max_sides})`)
-    : `(usually ${meal.min_sides}–${meal.max_sides})`;
+  const extra = meal.min_sides === meal.max_sides
+    ? (meal.max_sides === 0 ? "" : `usually ${meal.max_sides} extra`)
+    : `usually ${meal.min_sides}–${meal.max_sides} extra`;
+  hint.textContent = [always.length ? "★ always comes with it" : "", extra].filter(Boolean).join(" · ");
+  hint.textContent = hint.textContent ? `(${hint.textContent})` : "";
   const set = new Set(chosen || []);
-  meal.sides.forEach((s) => {
+  all.forEach((s) => {
     const label = document.createElement("label");
     label.className = "side-item";
     const cb = document.createElement("input");
@@ -935,7 +970,7 @@ function renderSideChoices(mealName, chosen) {
     cb.value = s;
     if (set.has(s)) cb.checked = true;
     label.appendChild(cb);
-    label.appendChild(document.createTextNode(" " + s));
+    label.appendChild(document.createTextNode(" " + (always.includes(s) ? "★ " : "") + s));
     box.appendChild(label);
   });
 }
@@ -975,31 +1010,44 @@ function renderDayCheckboxes(selectedDays) {
   });
 }
 
-// Tick-boxes for which library sides go with this meal. Any side already on
-// the meal but missing from the library is still shown (and kept) so editing
-// an older meal never silently drops its sides.
-function renderMealSideCheckboxes(chosen) {
+// One chip per library side; tapping cycles it off → maybe → always. Any side
+// already on the meal but missing from the library is still shown (and kept)
+// so editing an older meal never silently drops its sides.
+const SIDE_STATES = ["off", "maybe", "always"];
+function renderMealSideCheckboxes(maybe, always) {
   const box = $("m-sides-box");
   if (!box) return;
   box.innerHTML = "";
-  const chosenSet = new Set(chosen || []);
+  const alwaysSet = new Set(always || []);
+  const maybeSet = new Set(maybe || []);
   const names = SIDE_OPTIONS.map((s) => s.name);
-  (chosen || []).forEach((c) => { if (!names.some((n) => n.toLowerCase() === c.toLowerCase())) names.push(c); });
+  [...(always || []), ...(maybe || [])].forEach((c) => {
+    if (!names.some((n) => n.toLowerCase() === c.toLowerCase())) names.push(c);
+  });
   if (!names.length) {
     box.innerHTML = '<p class="muted empty-note">No sides yet — add some on the Sides tab.</p>';
     return;
   }
   names.sort((a, b) => a.localeCompare(b)).forEach((name) => {
-    const label = document.createElement("label");
-    label.className = "side-item";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = name;
-    if (chosenSet.has(name)) cb.checked = true;
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(" " + name));
-    box.appendChild(label);
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "side-item side-state";
+    chip.value = name;
+    const paint = () => {
+      chip.dataset.state = chip.dataset.state || "off";
+      chip.textContent = (chip.dataset.state === "always" ? "★ " : "") + name;
+    };
+    chip.dataset.state = alwaysSet.has(name) ? "always" : maybeSet.has(name) ? "maybe" : "off";
+    paint();
+    chip.addEventListener("click", () => {
+      chip.dataset.state = SIDE_STATES[(SIDE_STATES.indexOf(chip.dataset.state) + 1) % SIDE_STATES.length];
+      paint();
+    });
+    box.appendChild(chip);
   });
+}
+function editorSides(state) {
+  return [...document.querySelectorAll(`#m-sides-box .side-state[data-state="${state}"]`)].map((c) => c.value);
 }
 
 function openMealEditor(meal) {
@@ -1008,7 +1056,7 @@ function openMealEditor(meal) {
   $("m-name").value = meal ? meal.name : "";
   $("m-location").value = meal ? meal.location : "Home";
   $("m-effort").value = String(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY);
-  renderMealSideCheckboxes(meal ? (meal.sides || []) : []);
+  renderMealSideCheckboxes(meal ? maybeSides(meal) : [], meal ? alwaysSides(meal) : []);
   $("m-min").value = meal ? meal.min_sides : 0;
   $("m-max").value = meal ? meal.max_sides : 0;
   $("m-ingredients").value = meal ? (meal.ingredients || []).join(", ") : "";
@@ -1032,7 +1080,8 @@ async function saveMeal() {
     category: "Dinner", // kept for the database column; lunch no longer exists
     location: $("m-location").value,
     difficulty: parseInt($("m-effort").value, 10) || DEFAULT_DIFFICULTY,
-    sides: [...document.querySelectorAll("#m-sides-box input:checked")].map((c) => c.value),
+    sides: editorSides("maybe"),
+    always_sides: editorSides("always"),
     min_sides: min,
     max_sides: max,
     days: [...document.querySelectorAll("#m-days input:checked")].map((c) => c.value),
@@ -1086,7 +1135,9 @@ function renderMealsList() {
       tags.push(`<span class="tag">Home</span>`);
       tags.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(m)))}</span>`);
     }
-    if (m.sides && m.sides.length) tags.push(`<span class="tag">${m.sides.length} side${m.sides.length === 1 ? "" : "s"}</span>`);
+    const always = alwaysSides(m), maybe = maybeSides(m);
+    if (always.length) tags.push(`<span class="tag">With ${escapeHtml(always.join(" & "))}</span>`);
+    if (maybe.length) tags.push(`<span class="tag">${maybe.length} optional side${maybe.length === 1 ? "" : "s"}</span>`);
     row.innerHTML =
       `<span class="meal-row-name">${escapeHtml(m.name)}</span>` +
       `<span class="meal-row-tags">${tags.join("")}</span>`;
@@ -1106,10 +1157,22 @@ function renderSidesList() {
   SIDE_OPTIONS.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((s) => {
     const row = document.createElement("div");
     row.className = "side-row";
+    const info = document.createElement("div");
+    info.className = "side-row-info";
     const nm = document.createElement("span");
     nm.className = "side-row-name";
     nm.textContent = s.name;
-    row.appendChild(nm);
+    info.appendChild(nm);
+    const buy = document.createElement("input");
+    buy.className = "input side-row-buy";
+    buy.type = "text";
+    buy.placeholder = "What to buy, e.g. potatoes, butter, milk";
+    buy.setAttribute("aria-label", `What to buy for ${s.name}`);
+    buy.value = (s.ingredients || []).join(", ");
+    buy.addEventListener("change", () => saveSideIngredients(s, buy.value));
+    buy.addEventListener("keydown", (e) => { if (e.key === "Enter") buy.blur(); });
+    info.appendChild(buy);
+    row.appendChild(info);
     const del = document.createElement("button");
     del.className = "icon-btn side-row-del";
     del.type = "button";

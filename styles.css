@@ -347,7 +347,9 @@ input[type="date"].input { color-scheme: dark; }
   min-height: 62px; padding: 10px 8px 10px 16px;
   background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-md);
 }
-.side-row-name { flex: 1; font-size: 16px; font-weight: 500; }
+.side-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.side-row-name { font-size: 16px; font-weight: 500; }
+.side-row-buy { height: 36px; font-size: 14px; }
 
 /* ---------- inline add rows ---------- */
 .inline-add { display: flex; gap: 8px; margin-bottom: 18px; }
@@ -364,6 +366,14 @@ input[type="date"].input { color-scheme: dark; }
   border-color: var(--accent); background: var(--accent-soft); color: var(--text);
 }
 .chip-set .side-item input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+/* meal editor: tap a side to cycle off → maybe → always */
+.chip-set .side-state { font-family: inherit; }
+.chip-set .side-state[data-state="maybe"] {
+  border-color: var(--accent); background: var(--accent-soft); color: var(--text);
+}
+.chip-set .side-state[data-state="always"] {
+  border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600;
+}
 .sides-wrap { margin-top: 16px; }
 .empty-note { font-size: 14px; color: var(--muted); padding: 8px 0; }
 
