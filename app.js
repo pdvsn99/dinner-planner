@@ -25,8 +25,10 @@ const SLOTS = ["Dinner"];
 let USER_ID = null;
 let USER_EMAIL = null;
 let HOUSEHOLD_ID = null;        // the shared household this account belongs to
-let MEALS = [];                 // meals loaded from the database
-let SIDE_OPTIONS = [];          // shared library of side-dish names (Sides tab)
+let MEALS = [];                 // meals, each with .ingredients / .always_sides / .sides as names
+let SIDES = [];                 // sides (Sides tab), each with .ingredients as item names
+let ITEMS = [];                 // things you buy: { id, name, aisle, is_staple }
+let PRODUCTS = [];              // scanned products: { id, item_id, barcode, name, brand, … }
 let mealFilter = "";            // search text on the Meals tab
 let weekStart = mondayOf(new Date()); // Date of the Monday of the shown week
 let plan = { entries: {}, days: {} }; // entries["day|slot"] = {...}; days["day"] = {is_out, note}
@@ -39,23 +41,30 @@ const rand = (a) => a[Math.floor(Math.random() * a.length)];
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const ekey = (day, slot) => `${day}|${slot}`;
 
+/* ---------- lookups ----------
+ * In the database everything is linked by id: meals → items and sides,
+ * sides → items, products → item, stock → product. Names are unique per
+ * household, so in memory each meal/side also carries its items and sides
+ * as names (for display), and these helpers go between the two.            */
+const lc = (s) => String(s || "").trim().toLowerCase();
 function mealByName(name) { return MEALS.find((m) => m.name === name); }
-// A meal's sides come in two kinds: "always" sides that come with it every
-// time (mash for bangers and mash), and "maybe" sides the planner picks a few
-// of at random. Older meals only have the "maybe" list.
+function mealById(id) { return MEALS.find((m) => m.id === id); }
+// The meal a planned night points at (by id; older rows only had the name).
+function mealOf(entry) { return entry && ((entry.meal_id && mealById(entry.meal_id)) || mealByName(entry.meal_name)); }
+function itemById(id) { return ITEMS.find((i) => i.id === id); }
+function itemByName(name) { const k = lc(name); return ITEMS.find((i) => lc(i.name) === k); }
+function sideById(id) { return SIDES.find((s) => s.id === id); }
+function sideByName(name) { const k = lc(name); return SIDES.find((s) => lc(s.name) === k); }
+// A meal's sides: the ones it always comes with, and optional extras.
 function alwaysSides(meal) { return (meal && meal.always_sides) || []; }
 function maybeSides(meal) {
   const always = new Set(alwaysSides(meal));
   return ((meal && meal.sides) || []).filter((s) => !always.has(s));
 }
-function sideByName(name) {
-  const k = (name || "").trim().toLowerCase();
-  return SIDE_OPTIONS.find((s) => s.name.toLowerCase() === k);
-}
-// What to buy for a side: its own ingredients, or just its name if none set.
+// The items to buy for a side (by name).
 function sideShopping(name) {
   const side = sideByName(name);
-  return side && side.ingredients && side.ingredients.length ? side.ingredients : [name];
+  return side ? side.ingredients : [];
 }
 
 /* ---------- effort / difficulty ----------
@@ -122,29 +131,23 @@ const EXPIRY_SOON_DAYS = 7;
 // How many days past the use-by date an item can still count toward the nudge.
 const EXPIRY_GRACE_DAYS = 3;
 
-// Recipe names of cupboard items due to run out within EXPIRY_SOON_DAYS.
-// (Cupboard items carry an `ingredient_name` that matches a meal's ingredients.)
+// Ids of items with stock due to run out within EXPIRY_SOON_DAYS.
 function expiringIngredientSet() {
   const set = new Set();
   (typeof CUPBOARD !== "undefined" ? CUPBOARD : []).forEach((it) => {
-    const n = String(it.ingredient_name || "").toLowerCase().trim();
-    if (n.length < 3) return; // ignore blanks / tiny words that match everything
+    if (!it.item_id || (it.quantity || 0) <= 0) return;
     const days = cupDaysToExpiry(it.expiry_date);
     // Include items expiring soon and up to EXPIRY_GRACE_DAYS already past.
-    if (days !== null && days >= -EXPIRY_GRACE_DAYS && days <= EXPIRY_SOON_DAYS) set.add(n);
+    if (days !== null && days >= -EXPIRY_GRACE_DAYS && days <= EXPIRY_SOON_DAYS) set.add(it.item_id);
   });
   return set;
 }
-// Does this meal use any ingredient that's expiring soon?
+// Does this meal (or a side it always comes with) use an item that's expiring soon?
 function mealUsesExpiringStock(meal, set) {
   const exp = set || expiringIngredientSet();
   if (!exp.size) return false;
-  return [...(meal.ingredients || []), ...alwaysSides(meal).flatMap(sideShopping)].some((ing) => {
-    const n = String(ing || "").toLowerCase().trim();
-    if (!n) return false;
-    for (const s of exp) { if (n === s || n.includes(s) || s.includes(n)) return true; }
-    return false;
-  });
+  return [...(meal.ingredients || []), ...alwaysSides(meal).flatMap(sideShopping)]
+    .some((n) => { const it = itemByName(n); return it && exp.has(it.id); });
 }
 
 /* ---------- smart auto-planning ----------
@@ -285,7 +288,7 @@ function entryDifficulty(entry) {
   if (!entry || !entry.meal_name || entry.status === "out") return 0;
   const d = parseInt(entry.difficulty, 10);
   if (d >= 1 && d <= 5) return d;
-  const m = mealByName(entry.meal_name);
+  const m = mealOf(entry);
   return (m && m.location === "Home") ? mealDifficulty(m) : 0;
 }
 function entryText(entry) {
@@ -329,93 +332,154 @@ async function resolveHousehold() {
   await sb.from("household_members").insert({ household_id: HOUSEHOLD_ID, user_id: USER_ID, email: USER_EMAIL });
 }
 
-async function loadMeals() {
-  const { data, error } = await sb.from("meals").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
-  if (error) { flash("Couldn't load meals."); console.error(error); return; }
-  if (!data || data.length === 0) {
-    await seedMeals();
-    const again = await sb.from("meals").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
-    MEALS = again.data || [];
-    return;
-  }
-  MEALS = data;
+/* ---------- library: items, sides, meals ---------- */
+async function loadLibrary(seeded) {
+  const H = HOUSEHOLD_ID;
+  const q = (t, order) => sb.from(t).select("*").eq("household_id", H).order(order || "name");
+  const [items, sides, sideItems, meals, mealItems, mealSides] = await Promise.all([
+    q("items"), q("sides"), q("side_items", "position"), q("meals"), q("meal_items", "position"), q("meal_sides", "position"),
+  ]);
+  const err = [items, sides, sideItems, meals, mealItems, mealSides].find((r) => r.error);
+  if (err) { flash("Couldn't load meals."); console.error(err.error); return; }
+  if (!meals.data.length && !seeded) { await seedLibrary(); return loadLibrary(true); }
+  ITEMS = items.data;
+  const itemName = (id) => (itemById(id) || {}).name;
+  SIDES = sides.data.map((sd) => ({
+    ...sd,
+    ingredients: sideItems.data.filter((x) => x.side_id === sd.id).map((x) => itemName(x.item_id)).filter(Boolean),
+  }));
+  const sideName = (id) => (sideById(id) || {}).name;
+  MEALS = meals.data.map((m) => ({
+    ...m,
+    ingredients: mealItems.data.filter((x) => x.meal_id === m.id).map((x) => itemName(x.item_id)).filter(Boolean),
+    always_sides: mealSides.data.filter((x) => x.meal_id === m.id && x.kind === "comes_with").map((x) => sideName(x.side_id)).filter(Boolean),
+    sides: mealSides.data.filter((x) => x.meal_id === m.id && x.kind === "extra").map((x) => sideName(x.side_id)).filter(Boolean),
+  }));
 }
 
-async function loadSideOptions() {
-  const { data, error } = await sb.from("side_options").select("*").eq("household_id", HOUSEHOLD_ID).order("name");
-  if (error) { console.error(error); SIDE_OPTIONS = []; return; }
-  SIDE_OPTIONS = data || [];
+// Find an item by name, or create it (with a best-guess aisle).
+async function ensureItem(name) {
+  const clean = (name || "").trim();
+  if (!clean) return null;
+  const have = itemByName(clean);
+  if (have) return have;
+  const { data, error } = await sb.from("items")
+    .insert({ household_id: HOUSEHOLD_ID, name: clean, aisle: shopAisle(clean) }).select().single();
+  if (error) { console.error(error); return null; }
+  ITEMS.push(data);
+  return data;
+}
+async function ensureSide(name) {
+  const clean = (name || "").trim();
+  if (!clean) return null;
+  const have = sideByName(clean);
+  if (have) return have;
+  const { data, error } = await sb.from("sides").insert({ household_id: HOUSEHOLD_ID, name: clean }).select().single();
+  if (error) { console.error(error); return null; }
+  const side = { ...data, ingredients: [] };
+  SIDES.push(side);
+  return side;
+}
+
+// Replace a meal's items and sides with these names (creating any new ones).
+async function saveMealLinks(mealId, itemNames, comesWith, extras) {
+  const H = HOUSEHOLD_ID;
+  const items = (await Promise.all(itemNames.map(ensureItem))).filter(Boolean);
+  const cw = (await Promise.all(comesWith.map(ensureSide))).filter(Boolean);
+  const ex = (await Promise.all(extras.map(ensureSide))).filter((sd) => sd && !cw.includes(sd));
+  await Promise.all([
+    sb.from("meal_items").delete().eq("meal_id", mealId),
+    sb.from("meal_sides").delete().eq("meal_id", mealId),
+  ]);
+  const uniq = (list) => list.filter((x, i) => list.indexOf(x) === i);
+  const mi = uniq(items).map((it, i) => ({ household_id: H, meal_id: mealId, item_id: it.id, position: i }));
+  const ms = [
+    ...uniq(cw).map((sd, i) => ({ household_id: H, meal_id: mealId, side_id: sd.id, kind: "comes_with", position: i })),
+    ...uniq(ex).map((sd, i) => ({ household_id: H, meal_id: mealId, side_id: sd.id, kind: "extra", position: i })),
+  ];
+  const res = await Promise.all([
+    mi.length ? sb.from("meal_items").insert(mi) : { error: null },
+    ms.length ? sb.from("meal_sides").insert(ms) : { error: null },
+  ]);
+  const bad = res.find((r) => r.error);
+  if (bad) { console.error(bad.error); return false; }
+  return true;
 }
 
 async function addSideOption(name) {
   const clean = (name || "").trim();
   if (!clean) return;
-  if (SIDE_OPTIONS.some((s) => s.name.toLowerCase() === clean.toLowerCase())) { flash("That side is already in the list."); return; }
-  const { error } = await sb.from("side_options").insert({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name: clean });
-  if (error) { flash("Couldn't add side."); console.error(error); return; }
-  await loadSideOptions();
+  if (sideByName(clean)) { flash("That side is already in the list."); return; }
+  await ensureSide(clean);
   renderSidesList();
 }
 
+// "What to buy" for a side: replace its items with these names.
 async function saveSideIngredients(side, text) {
-  const ingredients = splitList(text);
-  if (ingredients.join(",") === (side.ingredients || []).join(",")) return;
-  const { error } = await sb.from("side_options").update({ ingredients }).eq("id", side.id);
-  if (error) { flash("Couldn't save side."); console.error(error); return; }
-  side.ingredients = ingredients;
+  const names = splitList(text);
+  if (names.join(",") === (side.ingredients || []).join(",")) return;
+  const items = (await Promise.all(names.map(ensureItem))).filter(Boolean)
+    .filter((it, i, all) => all.indexOf(it) === i);
+  await sb.from("side_items").delete().eq("side_id", side.id);
+  if (items.length) {
+    const { error } = await sb.from("side_items")
+      .insert(items.map((it, i) => ({ household_id: HOUSEHOLD_ID, side_id: side.id, item_id: it.id, position: i })));
+    if (error) { flash("Couldn't save side."); console.error(error); return; }
+  }
+  side.ingredients = items.map((it) => it.name);
   flash(`Saved what to buy for ${side.name}.`);
 }
 
 async function deleteSideOption(id) {
-  const { error } = await sb.from("side_options").delete().eq("id", id);
+  const { error } = await sb.from("sides").delete().eq("id", id);
   if (error) { flash("Couldn't remove side."); console.error(error); return; }
-  await loadSideOptions();
+  await loadLibrary();
   renderSidesList();
 }
 
-async function seedMeals() {
-  const rows = (window.DEFAULT_MEALS || []).map((m) => ({
-    user_id: USER_ID,
-    household_id: HOUSEHOLD_ID,
-    name: m.name,
-    category: "Dinner", // kept for the database column; lunch no longer exists
-    location: m.location || "Home",
-    difficulty: m.difficulty || DEFAULT_DIFFICULTY,
-    sides: m.sides || [],
-    always_sides: m.always || [],
-    min_sides: m.min || 0,
-    max_sides: m.max || 0,
-    days: m.days || [],
-    ingredients: m.ingredients || [],
-  }));
-  if (rows.length) {
-    // upsert + ignoreDuplicates so seeding twice (e.g. two tabs/devices on a
-    // brand-new account) can never create duplicate meals. Backed by the
-    // (household_id, name) unique index in the database.
-    const { error } = await sb.from("meals").upsert(rows, {
-      onConflict: "household_id,name",
-      ignoreDuplicates: true,
-    });
-    if (error) console.error("seed error", error);
-  }
+// A brand-new household starts with the meals and sides in meals.js.
+async function seedLibrary() {
+  const H = HOUSEHOLD_ID;
+  const defs = window.DEFAULT_MEALS || [];
+  const sideDefs = window.DEFAULT_SIDES || {};
+  const itemNames = new Set();
+  defs.forEach((m) => (m.ingredients || []).forEach((n) => itemNames.add(n)));
+  Object.values(sideDefs).forEach((list) => list.forEach((n) => itemNames.add(n)));
+  const sideNames = new Set(Object.keys(sideDefs));
+  defs.forEach((m) => [...(m.always || []), ...(m.sides || [])].forEach((n) => sideNames.add(n)));
 
-  // Seed the sides library from every distinct side the starter meals use,
-  // with what to buy for each one from DEFAULT_SIDES.
-  const names = new Set();
-  (window.DEFAULT_MEALS || []).forEach((m) => [...(m.sides || []), ...(m.always || [])].forEach((s) => {
-    const n = (s || "").trim();
-    if (n) names.add(n);
-  }));
-  const sideIngredients = window.DEFAULT_SIDES || {};
-  const sideRows = [...names].map((name) => ({
-    household_id: HOUSEHOLD_ID, user_id: USER_ID, name, ingredients: sideIngredients[name] || [],
-  }));
-  if (sideRows.length) {
-    const { error } = await sb.from("side_options").insert(sideRows);
-    if (error) console.error("side seed error", error); // non-fatal (e.g. already seeded)
-  }
+  // upsert + ignoreDuplicates so seeding twice (two tabs on a brand-new
+  // account) can't create duplicates; each table has a unique name per household.
+  const up = async (t, rows, onConflict) => {
+    if (!rows.length) return [];
+    await sb.from(t).upsert(rows, { onConflict, ignoreDuplicates: true });
+    const { data } = await sb.from(t).select("*").eq("household_id", H);
+    return data || [];
+  };
+  const items = await up("items", [...itemNames].map((name) => ({ household_id: H, name, aisle: shopAisle(name) })), "household_id,name");
+  const sides = await up("sides", [...sideNames].map((name) => ({ household_id: H, name })), "household_id,name");
+  const meals = await up("meals", defs.map((m) => ({
+    household_id: H, user_id: USER_ID, name: m.name, category: "Dinner", location: m.location || "Home",
+    difficulty: m.difficulty || DEFAULT_DIFFICULTY, days: m.days || [],
+  })), "household_id,name");
+  const iid = (n) => (items.find((x) => lc(x.name) === lc(n)) || {}).id;
+  const sid = (n) => (sides.find((x) => lc(x.name) === lc(n)) || {}).id;
+  const mid = (n) => (meals.find((x) => x.name === n) || {}).id;
+  const sideItems = Object.entries(sideDefs).flatMap(([sn, list]) =>
+    list.map((n, i) => ({ household_id: H, side_id: sid(sn), item_id: iid(n), position: i })));
+  const mealItems = defs.flatMap((m) => (m.ingredients || []).map((n, i) => ({ household_id: H, meal_id: mid(m.name), item_id: iid(n), position: i })));
+  const mealSides = defs.flatMap((m) => [
+    ...(m.always || []).map((n, i) => ({ household_id: H, meal_id: mid(m.name), side_id: sid(n), kind: "comes_with", position: i })),
+    ...(m.sides || []).map((n, i) => ({ household_id: H, meal_id: mid(m.name), side_id: sid(n), kind: "extra", position: i })),
+  ]);
+  await Promise.all([
+    up("side_items", sideItems, "side_id,item_id"),
+    up("meal_items", mealItems, "meal_id,item_id"),
+    up("meal_sides", mealSides, "meal_id,side_id"),
+  ]);
 }
 
+/* ---------- the week ---------- */
 async function loadPlan() {
   const ws = isoDate(weekStart);
   plan = { entries: {}, days: {} };
@@ -425,14 +489,23 @@ async function loadPlan() {
     loadHistory(),
     loadShopItems(),
   ]);
-  (entries || []).forEach((e) => { plan.entries[ekey(e.day, e.slot)] = e; });
+  const ids = (entries || []).map((e) => e.id);
+  const { data: es } = ids.length
+    ? await sb.from("plan_entry_sides").select("*").in("entry_id", ids).order("position")
+    : { data: [] };
+  (entries || []).forEach((e) => {
+    e.sides = (es || []).filter((x) => x.entry_id === e.id).map((x) => (sideById(x.side_id) || {}).name).filter(Boolean);
+    plan.entries[ekey(e.day, e.slot)] = e;
+  });
   (days || []).forEach((d) => { plan.days[d.day] = d; });
 }
 
 // Build the database row for one planned night. `difficulty` snapshots the
 // effort of the meal at the moment it's planned (home meals only), and
-// `source` records whether it was auto-filled or chosen by a person.
+// `source` records whether it was auto-filled or chosen by a person. The
+// sides on the night are stored separately, in plan_entry_sides.
 function entryRow(dayKey, slot, entry) {
+  const meal = entry.meal_name ? mealByName(entry.meal_name) : null;
   return {
     user_id: USER_ID,
     household_id: HOUSEHOLD_ID,
@@ -440,8 +513,8 @@ function entryRow(dayKey, slot, entry) {
     day: dayKey,
     slot,
     status: entry.status || "planned",
+    meal_id: meal ? meal.id : null,
     meal_name: entry.meal_name || null,
-    sides: entry.sides || [],
     note: entry.note || null,
     difficulty: (entry.difficulty === undefined ? null : entry.difficulty),
     source: entry.source || null,
@@ -449,20 +522,28 @@ function entryRow(dayKey, slot, entry) {
   };
 }
 
-async function saveEntry(dayKey, slot, entry) {
-  const row = entryRow(dayKey, slot, entry);
-  plan.entries[ekey(dayKey, slot)] = row;
-  const { error } = await sb.from("plan_entries").upsert(row, { onConflict: "household_id,week_start,day,slot" });
-  if (error) { flash("Couldn't save."); console.error(error); }
-}
+async function saveEntry(dayKey, slot, entry) { await saveEntries([{ day: dayKey, slot, entry }]); }
 
 async function saveEntries(list) {
   // list: [{day, slot, entry}]
+  if (!list.length) return;
   const rows = list.map(({ day, slot, entry }) => entryRow(day, slot, entry));
-  rows.forEach((r) => { plan.entries[ekey(r.day, r.slot)] = r; });
-  if (rows.length) {
-    const { error } = await sb.from("plan_entries").upsert(rows, { onConflict: "household_id,week_start,day,slot" });
-    if (error) { flash("Couldn't save."); console.error(error); }
+  list.forEach(({ day, slot, entry }, i) => { plan.entries[ekey(day, slot)] = { ...rows[i], sides: entry.sides || [] }; });
+  const { data, error } = await sb.from("plan_entries")
+    .upsert(rows, { onConflict: "household_id,week_start,day,slot" }).select("id,day,slot");
+  if (error) { flash("Couldn't save."); console.error(error); return; }
+  // Then the sides on each night.
+  const ids = data.map((r) => r.id);
+  await sb.from("plan_entry_sides").delete().in("entry_id", ids);
+  const sideRows = data.flatMap((r) => {
+    const e = plan.entries[ekey(r.day, r.slot)];
+    e.id = r.id;
+    return (e.sides || []).map((n) => sideByName(n)).filter(Boolean)
+      .map((sd, i) => ({ household_id: HOUSEHOLD_ID, entry_id: r.id, side_id: sd.id, position: i }));
+  });
+  if (sideRows.length) {
+    const { error: se } = await sb.from("plan_entry_sides").insert(sideRows);
+    if (se) { flash("Couldn't save sides."); console.error(se); }
   }
 }
 
@@ -581,14 +662,14 @@ function buildShoppingList() {
     SLOTS.forEach((slot) => {
       const st = cellState(d.key, slot);
       if (st.out || !st.entry || !st.entry.meal_name) return;
-      const meal = mealByName(st.entry.meal_name);
-      const parts = [...((meal && meal.ingredients) || []), ...(st.entry.sides || []).flatMap(sideShopping)];
-      parts.forEach((p) => {
-        const key = (p || "").trim().toLowerCase();
-        if (!key) return;
-        if (!items[key]) items[key] = { label: p.trim(), count: 0, meals: new Set() };
-        items[key].count += 1;
-        items[key].meals.add(st.entry.meal_name);
+      const meal = mealOf(st.entry);
+      const names = [...((meal && meal.ingredients) || []), ...(st.entry.sides || []).flatMap(sideShopping)];
+      names.forEach((n) => {
+        const item = itemByName(n);
+        if (!item) return;
+        if (!items[item.id]) items[item.id] = { item, label: item.name, count: 0, meals: new Set() };
+        items[item.id].count += 1;
+        items[item.id].meals.add(st.entry.meal_name);
       });
     });
   });
@@ -635,7 +716,7 @@ function renderGrid() {
     const dateObj = dateForDay(d.key);
     const st = cellState(d.key, slot);
     const entry = st.out ? null : st.entry;
-    const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
+    const meal = entry && entry.meal_name ? mealOf(entry) : null;
 
     const row = document.createElement("div");
     row.className = "day-row";
@@ -708,7 +789,11 @@ async function uploadLegacyShopState(ws) {
   try { old = JSON.parse(localStorage.getItem(legacyShopKey())); } catch (_) {}
   if (!old || typeof old !== "object") return;
   const rows = [
-    ...(Array.isArray(old.done) ? old.done : []).map((key) => ({ kind: "done", key, label: key })),
+    // Old ticks were keyed by name ("m:rice"); ticks are now by item id ("i:…").
+    ...(Array.isArray(old.done) ? old.done : []).map((key) => {
+      const it = key.startsWith("m:") ? itemByName(key.slice(2)) : null;
+      return it ? { kind: "done", key: "i:" + it.id, label: it.name } : { kind: "done", key, label: key };
+    }),
     ...(Array.isArray(old.extras) ? old.extras : []).map((label) => ({ kind: "extra", key: label.toLowerCase(), label })),
   ].map((r) => ({ ...r, household_id: HOUSEHOLD_ID, user_id: USER_ID, week_start: ws }));
   if (rows.length) {
@@ -777,10 +862,13 @@ function untickAllShop() {
 const AISLES = [
   ["Frozen", ["frozen", "oven chips", "fries", "wedges", "hash brown", "yorkshire", "onion rings", "dinosaur",
     "fish burger", "breaded", "southern fried", "chicken bites", "chicken burgers", "ice cream"]],
+  ["Snacks & drinks", ["sweets", "jelly", "laces", "pastilles", "crisps", "chocolate", "biscuits", "squash", "juice",
+    "cereal", "fizzy", "cola", "lemonade"]],
   ["Tins, jars & dry", ["sauce", "tin", "chopped tomatoes", "plum tomatoes", "purée", "puree", "passata", "baked beans",
     "kidney beans", "mushy peas", "pasta", "spaghetti", "macaroni", "pappardelle", "lasagne", "noodle", "rice", "stock",
     "gravy", "stuffing", "flour", "pesto", "mayo", "salsa", "oil", "seasoning", "spice", "tortilla chips", "crackers",
-    "popadoms", "kit", "taco", "gherkins", "croutons", "dressing", "crispy onions", "sweetcorn", "jalapeño", "jalapeno"]],
+    "popadoms", "poppadoms", "kit", "taco", "gherkins", "croutons", "dressing", "crispy onions", "sweetcorn", "jalapeño",
+    "jalapeno", "ketchup", "mustard", "vinegar", "lentils", "breadcrumbs", "black pepper", "salt", "granules", "soup"]],
   ["Meat & fish", ["chicken", "beef", "mince", "steak", "pork", "sausage", "bacon", "ham", "lamb", "turkey", "duck",
     "fish", "salmon", "cod", "prawn", "pancetta", "pepperoni", "kebab", "meatballs"]],
   ["Fridge", ["milk", "cheese", "butter", "cream", "egg", "yoghurt", "yogurt", "mozzarella", "parmesan", "pecorino",
@@ -789,8 +877,10 @@ const AISLES = [
   ["Fruit & veg", ["potato", "carrot", "onion", "pepper", "tomato", "lettuce", "cucumber", "mushroom", "garlic",
     "broccoli", "cauliflower", "parsnip", "green beans", "rocket", "salad", "lemon", "lime", "avocado", "apple", "banana"]],
 ];
-const AISLE_ICON = { "Fruit & veg": "🥕", "Bread": "🍞", "Meat & fish": "🥩", "Fridge": "🧀", "Tins, jars & dry": "🥫", "Frozen": "❄️", "Other": "🛒" };
-const AISLE_ORDER = ["Fruit & veg", "Bread", "Meat & fish", "Fridge", "Tins, jars & dry", "Frozen", "Other"];
+const AISLE_ICON = { "Fruit & veg": "🥕", "Bread": "🍞", "Meat & fish": "🥩", "Fridge": "🧀", "Tins, jars & dry": "🥫", "Frozen": "❄️", "Snacks & drinks": "🍬", "Other": "🛒" };
+const AISLE_ORDER = ["Fruit & veg", "Bread", "Meat & fish", "Fridge", "Tins, jars & dry", "Frozen", "Snacks & drinks", "Other"];
+// Best guess at a new item's aisle from its name. Each item stores its own
+// aisle, so this is only used when an item is first created.
 function shopAisle(label) {
   const t = (label || "").toLowerCase();
   const hit = AISLES.find(([, words]) => words.some((w) => t.includes(w)));
@@ -798,45 +888,33 @@ function shopAisle(label) {
 }
 
 /* ---------- cupboard check ----------
- * An item counts as "probably in the cupboard" when the two names are the
- * same once plurals and describing words are ignored, e.g. "rice" = "basmati
- * rice", "eggs" = "free range eggs", "beef stock cubes" = "beef stock". Any
- * other extra word means a different thing: "chicken" ≠ "chicken stock",
- * "peppers" ≠ "black pepper", "tomatoes" ≠ "peeled tomatoes".               */
-const stem = (w) => w.replace(/(es|s)$/, "");
-const DESCRIBING_WORDS = new Set([
-  "light", "plain", "whole", "free", "range", "scottish", "british", "slightly", "salted", "unsalted", "spreadable",
-  "seeded", "brioche", "cooked", "basmati", "long", "grain", "jasmine", "fresh", "large", "small", "extra", "mature",
-  "mild", "organic", "original", "classic", "reduced", "fat", "low", "cubes", "granules", "pouch", "tin", "tinned",
-  "jar", "pack", "frozen",
-].map(stem));
-function nameWords(s) {
-  return String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1).map(stem)
-    .filter((w) => !DESCRIBING_WORDS.has(w));
-}
-function cupboardHas(label) {
-  const want = [...new Set(nameWords(label))].sort().join(" ");
-  if (!want) return null;
-  return CUPBOARD.find((it) => (it.quantity || 0) > 0
-    && [...new Set(nameWords(it.ingredient_name))].sort().join(" ") === want) || null;
+ * An item is "probably in the cupboard" when any product linked to it has
+ * stock. Returns the stock row with the most in it, for the "You have" note. */
+function cupboardHas(item) {
+  if (!item) return null;
+  const rows = CUPBOARD.filter((it) => it.item_id === item.id && (it.quantity || 0) > 0);
+  return rows.sort((a, b) => (b.quantity || 0) - (a.quantity || 0))[0] || null;
 }
 
-// The full list of shopping rows for the week: meal ingredients + your extras.
+// The full list of shopping rows for the week: meal items + your extras.
 function shoppingRows() {
   const rows = buildShoppingList().map((it) => ({
-    key: "m:" + it.label.toLowerCase(),
+    key: "i:" + it.item.id,
     label: cap(it.label),
     qty: it.count > 1 ? "×" + it.count : "",
     sub: [...it.meals].join(", "),
     extra: false,
+    aisle: it.item.aisle || shopAisle(it.label),
+    inCupboard: cupboardHas(it.item),
   }));
-  SHOP.extras.forEach((label) => rows.push({
-    key: "x:" + label.toLowerCase(), label: cap(label), qty: "", sub: "Added by you", extra: true,
-  }));
-  rows.forEach((r) => {
-    r.aisle = shopAisle(r.label);
-    r.inCupboard = r.extra ? null : cupboardHas(r.label);
+  SHOP.extras.forEach((label) => {
+    const known = itemByName(label);
+    rows.push({
+      key: "x:" + label.toLowerCase(), label: cap(label), qty: "", sub: "Added by you", extra: true,
+      aisle: (known && known.aisle) || shopAisle(label), inCupboard: null,
+    });
   });
+  rows.forEach((r) => { if (!AISLE_ORDER.includes(r.aisle)) r.aisle = "Other"; });
   return rows;
 }
 
@@ -949,7 +1027,7 @@ function renderNight() {
   $("modal-title").textContent = `${d.label} ${dateForDay(nightDay).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
   const st = cellState(nightDay, SLOTS[0]);
   const entry = st.out ? null : st.entry;
-  const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
+  const meal = entry && entry.meal_name ? mealOf(entry) : null;
   const isHome = !!meal && meal.location === "Home";
 
   $("night-meal").textContent = st.out ? "Not cooking tonight" : (entry && entry.meal_name) || "Nothing planned yet";
@@ -1091,7 +1169,7 @@ function chipEditor(boxId, values) {
   input.className = "chip-input";
   input.type = "text";
   input.placeholder = box.dataset.placeholder || "Add…";
-  if (box.dataset.sides) input.setAttribute("list", "side-names");
+  input.setAttribute("list", box.dataset.sides ? "side-names" : "item-names");
   const addChip = (text) => {
     const v = (text || "").trim();
     if (!v || chipValues(boxId).some((x) => x.toLowerCase() === v.toLowerCase())) return;
@@ -1149,7 +1227,8 @@ function openMealEditor(meal) {
   setRadio("m-loc", meal ? meal.location : "Home");
   setRadio("m-effort", effortBucket(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY));
   setRadio("m-rating", meal ? Math.sign(meal.rating | 0) : 0);
-  $("side-names").innerHTML = SIDE_OPTIONS.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
+  $("side-names").innerHTML = SIDES.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
+  $("item-names").innerHTML = ITEMS.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
   chipEditor("m-buy", meal ? meal.ingredients : []);
   chipEditor("m-always", alwaysSides(meal));
   chipEditor("m-extras", maybeSides(meal));
@@ -1175,38 +1254,33 @@ async function saveMeal() {
     ? editingMealDifficulty : EFFORT_BUCKETS[bucket];
   const always = location === "Home" ? chipValues("m-always") : [];
   const extras = location === "Home" ? chipValues("m-extras").filter((x) => !always.includes(x)) : [];
+  const buy = location === "Home" ? chipValues("m-buy") : [];
   const row = {
     name,
     category: "Dinner", // kept for the database column; lunch no longer exists
     location,
     difficulty,
     rating: location === "Home" ? (parseInt(getRadio("m-rating"), 10) || 0) : 0,
-    always_sides: always,
-    sides: extras,
-    min_sides: 0,
-    max_sides: 0,
     days: editorDays(),
-    ingredients: location === "Home" ? chipValues("m-buy") : [],
   };
-  let error;
-  if (editingMealId) {
-    ({ error } = await sb.from("meals").update(row).eq("id", editingMealId));
-  } else {
-    ({ error } = await sb.from("meals").insert({ ...row, user_id: USER_ID, household_id: HOUSEHOLD_ID }));
-  }
-  if (error) { flash(error.code === "23505" ? "There's already a meal with that name." : "Couldn't save meal."); console.error(error); return; }
-  // Any side typed here that isn't in the Sides list yet gets added to it.
+  const before = editingMealId ? mealById(editingMealId) : null;
+  const res = editingMealId
+    ? await sb.from("meals").update(row).eq("id", editingMealId).select().single()
+    : await sb.from("meals").insert({ ...row, user_id: USER_ID, household_id: HOUSEHOLD_ID }).select().single();
+  if (res.error) { flash(res.error.code === "23505" ? "There's already a meal with that name." : "Couldn't save meal."); console.error(res.error); return; }
   const newSides = [...always, ...extras].filter((x) => !sideByName(x));
-  if (newSides.length) {
-    const { error: se } = await sb.from("side_options").insert(newSides.map((n) => ({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name: n })));
-    if (se) console.error(se);
-    await loadSideOptions();
+  const ok = await saveMealLinks(res.data.id, buy, always, extras);
+  // Keep planned nights showing the new name if the meal was renamed.
+  if (before && before.name !== name) {
+    await sb.from("plan_entries").update({ meal_name: name }).eq("meal_id", before.id);
+    Object.values(plan.entries).forEach((e) => { if (e.meal_id === before.id) e.meal_name = name; });
   }
   closeMealEditor();
-  await loadMeals();
+  await loadLibrary();
   renderMealsList();
   render();
-  flash(newSides.length ? `Meal saved. Add what to buy for ${newSides.join(", ")} on the Sides tab.` : "Meal saved.");
+  if (!ok) flash("Meal saved, but its items or sides didn't all save. Try again.");
+  else flash(newSides.length ? `Meal saved. Add what to buy for ${newSides.join(", ")} on the Sides tab.` : "Meal saved.");
 }
 
 async function deleteMeal() {
@@ -1215,7 +1289,7 @@ async function deleteMeal() {
   const { error } = await sb.from("meals").delete().eq("id", editingMealId);
   if (error) { flash("Couldn't delete."); console.error(error); return; }
   closeMealEditor();
-  await loadMeals();
+  await loadLibrary();
   renderMealsList();
 }
 
@@ -1261,11 +1335,11 @@ function renderSidesList() {
   const box = $("sides-list");
   if (!box) return;
   box.innerHTML = "";
-  if (!SIDE_OPTIONS.length) {
+  if (!SIDES.length) {
     box.innerHTML = '<p class="muted empty-note">No sides yet — add your first one above.</p>';
     return;
   }
-  SIDE_OPTIONS.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((s) => {
+  SIDES.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((s) => {
     const row = document.createElement("div");
     row.className = "side-row";
     const info = document.createElement("div");
@@ -1290,7 +1364,8 @@ function renderSidesList() {
     del.setAttribute("aria-label", `Remove ${s.name}`);
     del.textContent = "🗑";
     del.addEventListener("click", () => {
-      if (!confirm(`Remove "${s.name}" from the sides list?\n\nMeals that already use it will keep it.`)) return;
+      const users = MEALS.filter((m) => [...alwaysSides(m), ...maybeSides(m)].includes(s.name)).map((m) => m.name);
+      if (!confirm(`Remove "${s.name}" from the sides list?` + (users.length ? `\n\nIt will also come off: ${users.join(", ")}.` : ""))) return;
       deleteSideOption(s.id);
     });
     row.appendChild(del);
@@ -1299,7 +1374,7 @@ function renderSidesList() {
 }
 
 /* ============================================================
- *  Cupboard (barcode scanning -> cupboard_items)
+ *  Cupboard (barcode scanning -> products + stock)
  * ============================================================ */
 let CUPBOARD = [];
 let cupFilter = "";
@@ -1313,30 +1388,80 @@ const CUP_FULLNESS = ["", "Full", "3/4", "1/2", "1/4", "Nearly empty"];
 const CUP_LOCATIONS = ["Cupboard", "Fridge", "Freezer"];
 const CUP_FULL_PCT = { "Full": 100, "3/4": 75, "1/2": 50, "1/4": 25, "Nearly empty": 10 };
 
-/* ---- data layer ---- */
-async function loadCupboard() {
-  const { data, error } = await sb.from("cupboard_items").select("*")
-    .eq("household_id", HOUSEHOLD_ID).order("created_at", { ascending: false });
-  if (error) { console.error(error); CUPBOARD = []; return; }
-  CUPBOARD = data || [];
+/* ---- data layer ----
+ * Stock rows point at a product (a barcode), and products point at an item.
+ * CUPBOARD holds one entry per stock row with its product's details and the
+ * item's name copied on, so the list can show and search them directly.   */
+const STOCK_FIELDS = ["quantity", "fullness", "fullness_pct", "opened", "expiry_date", "location", "notes"];
+const PRODUCT_FIELDS = { product_name: "name", brand: "brand", category: "category", size_text: "size_text", size_value: "size_value", size_unit: "size_unit" };
+function cupRow(stock) {
+  const p = PRODUCTS.find((x) => x.id === stock.product_id) || {};
+  const item = p.item_id ? itemById(p.item_id) : null;
+  return {
+    ...stock,
+    barcode: p.barcode || null, product_name: p.name || null, brand: p.brand || null, category: p.category || null,
+    size_text: p.size_text || null, size_value: p.size_value, size_unit: p.size_unit,
+    item_id: p.item_id || null, ingredient_name: item ? item.name : null,
+  };
 }
-async function insertCupboardItem(row) {
-  const { data, error } = await sb.from("cupboard_items")
-    .insert({ ...row, household_id: HOUSEHOLD_ID, user_id: USER_ID, source: "cupboard-scanner" })
-    .select().single();
+function refreshCupRows() { CUPBOARD = CUPBOARD.map(cupRow); }
+async function loadCupboard() {
+  const [prod, stock] = await Promise.all([
+    sb.from("products").select("*").eq("household_id", HOUSEHOLD_ID),
+    sb.from("stock").select("*").eq("household_id", HOUSEHOLD_ID).order("created_at", { ascending: false }),
+  ]);
+  if (prod.error || stock.error) { console.error(prod.error || stock.error); CUPBOARD = []; return; }
+  PRODUCTS = prod.data || [];
+  CUPBOARD = (stock.data || []).map(cupRow);
+}
+async function insertProduct(row) {
+  const { data, error } = await sb.from("products").insert({ ...row, household_id: HOUSEHOLD_ID }).select().single();
   if (error) { flash("Couldn't save item."); console.error(error); return null; }
-  CUPBOARD.unshift(data);
+  PRODUCTS.push(data);
   return data;
 }
-async function updateCupboardItem(id, patch) {
-  const { data, error } = await sb.from("cupboard_items")
+async function updateProduct(id, patch) {
+  const { data, error } = await sb.from("products")
     .update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id).select().single();
   if (error) { flash("Couldn't update."); console.error(error); return; }
-  const i = CUPBOARD.findIndex((x) => x.id === id);
-  if (i >= 0 && data) CUPBOARD[i] = data;
+  const i = PRODUCTS.findIndex((x) => x.id === id);
+  if (i >= 0) PRODUCTS[i] = data;
+  refreshCupRows(); // every stock row of this product shows the change
 }
+async function insertStock(row) {
+  const { data, error } = await sb.from("stock").insert({ ...row, household_id: HOUSEHOLD_ID }).select().single();
+  if (error) { flash("Couldn't save item."); console.error(error); return null; }
+  const r = cupRow(data);
+  CUPBOARD.unshift(r);
+  return r;
+}
+// Update a cupboard entry: stock fields go to its stock row, product details
+// to its product, and "counts as" links the product to an item.
+async function updateCupboardItem(id, patch) {
+  const it = CUPBOARD.find((x) => x.id === id);
+  if (!it) return;
+  const stockPatch = {}, productPatch = {};
+  Object.entries(patch).forEach(([k, v]) => {
+    if (STOCK_FIELDS.includes(k)) stockPatch[k] = v;
+    else if (PRODUCT_FIELDS[k]) productPatch[PRODUCT_FIELDS[k]] = v;
+  });
+  if ("ingredient_name" in patch) {
+    const item = patch.ingredient_name ? await ensureItem(patch.ingredient_name) : null;
+    productPatch.item_id = item ? item.id : null;
+  }
+  if (Object.keys(productPatch).length) await updateProduct(it.product_id, productPatch);
+  if (Object.keys(stockPatch).length) {
+    const { data, error } = await sb.from("stock")
+      .update({ ...stockPatch, updated_at: new Date().toISOString() }).eq("id", id).select().single();
+    if (error) { flash("Couldn't update."); console.error(error); return; }
+    const i = CUPBOARD.findIndex((x) => x.id === id);
+    if (i >= 0) CUPBOARD[i] = cupRow(data);
+  }
+}
+// Removes the stock row only; the product (and what it counts as) is kept,
+// so scanning the same barcode again knows what it is.
 async function deleteCupboardItem(id) {
-  const { error } = await sb.from("cupboard_items").delete().eq("id", id);
+  const { error } = await sb.from("stock").delete().eq("id", id);
   if (error) { flash("Couldn't delete."); console.error(error); return; }
   CUPBOARD = CUPBOARD.filter((x) => x.id !== id);
 }
@@ -1355,7 +1480,6 @@ function cupFullnessPatch(v) {
     fullness: v || null,
     fullness_pct: (v in CUP_FULL_PCT) ? CUP_FULL_PCT[v] : null,
     opened: v ? (v !== "Full") : null,
-    low_stock: v ? (v === "1/4" || v === "Nearly empty") : null,
   };
 }
 function cupLookup(code) {
@@ -1497,36 +1621,37 @@ function cupDecodePhoto(file) {
 }
 // Add one scanned container as its own row, then fill in details from the database.
 async function cupCommit(code) {
-  const known = CUPBOARD.find((x) => x.barcode === code && x.product_name);
   cupFeedback();
-  const row = await insertCupboardItem({
-    barcode: code,
-    product_name: known ? known.product_name : null,
-    brand: known ? known.brand : null,
-    ingredient_name: known ? known.ingredient_name : null,
-    category: known ? known.category : null,
-    size_text: known ? known.size_text : null,
-    size_value: known ? known.size_value : null,
-    size_unit: known ? known.size_unit : null,
-    quantity: 1,
-    location: "Cupboard",
-  });
+  const known = PRODUCTS.find((x) => x.barcode === code);
+  if (known) {
+    // Seen this barcode before: one more of it (on the row without a use-by
+    // date, if there is one; a new row otherwise).
+    const open = CUPBOARD.find((x) => x.product_id === known.id && !x.expiry_date);
+    if (open) await updateCupboardItem(open.id, { quantity: (open.quantity || 0) + 1 });
+    else await insertStock({ product_id: known.id, quantity: 1, location: "Cupboard" });
+    renderCupboard();
+    cupSetStatus("Added another " + (known.name || code), "ok");
+    return;
+  }
+  const product = await insertProduct({ barcode: code });
+  if (!product) return;
+  await insertStock({ product_id: product.id, quantity: 1, location: "Cupboard" });
   renderCupboard();
-  if (!row) return;
-  if (known) { cupSetStatus("Added another " + (known.product_name || code), "ok"); return; }
   cupSetStatus("Added " + code + " — looking up…");
   const info = await cupLookup(code);
   if (info && info.name) {
     const sz = cupParseSize(info.size);
-    await updateCupboardItem(row.id, {
-      product_name: info.name, brand: info.brand || null,
-      ingredient_name: info.name.toLowerCase(),
+    const match = itemByName(info.name);
+    await updateProduct(product.id, {
+      name: info.name, brand: info.brand || null,
       size_text: info.size || null, size_value: sz.value, size_unit: sz.unit,
+      item_id: match ? match.id : null,
     });
     renderCupboard();
-    cupSetStatus("Found: " + info.name + (info.size ? " (" + info.size + ")" : ""), "ok");
+    cupSetStatus("Found: " + info.name + (info.size ? " (" + info.size + ")" : "") +
+      (match ? "" : ". What does it count as? Fill in “Counts as” below."), "ok");
   } else {
-    cupSetStatus("Added " + code + " — not in the database. Add a name and recipe name below.", "");
+    cupSetStatus("Added " + code + " — not found online. Add its name and what it counts as below.", "");
   }
 }
 
@@ -1535,6 +1660,7 @@ function renderCupboard() {
   const box = $("cup-list");
   const count = $("cup-count");
   if (!box) return;
+  $("item-names").innerHTML = ITEMS.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
   const q = cupFilter.trim().toLowerCase();
   const match = (it) => !q || [it.product_name, it.ingredient_name, it.brand, it.barcode]
     .some((v) => (v || "").toLowerCase().includes(q));
@@ -1608,8 +1734,8 @@ function cupItemHtml(it) {
         <input class="cup-name select" data-field="product_name" value="${escapeHtml(it.product_name || "")}" placeholder="Product name" />
         <button class="icon-btn cup-del" data-act="del" aria-label="Delete">🗑</button>
       </div>
-      <label class="cup-lbl">Recipe name <span class="hint-inline">(matches your meals)</span></label>
-      <input class="cup-ing select" data-field="ingredient_name" value="${escapeHtml(it.ingredient_name || "")}" placeholder="e.g. curry sauce" />
+      <label class="cup-lbl">Counts as <span class="hint-inline">(the item your meals use)</span></label>
+      <input class="cup-ing select${it.item_id ? "" : " needs-item"}" data-field="ingredient_name" list="item-names" value="${escapeHtml(it.ingredient_name || "")}" placeholder="e.g. curry sauce" />
       <div class="cup-sub">${sub || `<span class="muted">${escapeHtml(it.barcode || "no barcode")}</span>`}${expTag}</div>
       <div class="cup-quick">
         <button class="btn btn-outline btn-sm" data-act="some">🥄 Used some</button>
@@ -1665,7 +1791,11 @@ async function cupOnListChange(e) {
     // Re-render so the category chip updates (change fires on blur).
     await updateCupboardItem(id, { category: el.value.trim() || null });
     renderCupboard();
-  } else if (field === "product_name" || field === "ingredient_name") {
+  } else if (field === "ingredient_name") {
+    // Linking the product to an item (creating the item if it's new).
+    await updateCupboardItem(id, { ingredient_name: el.value.trim() || null });
+    renderCupboard();
+  } else if (field === "product_name") {
     // Persist text without re-rendering (keeps focus/caret).
     await updateCupboardItem(id, { [field]: el.value.trim() || null });
   }
@@ -1692,9 +1822,11 @@ async function cupUseOne(it) {
   await deleteCupboardItem(it.id);
   renderCupboard();
   flashUndo(`${it.product_name || "Item"} used up and removed.`, async () => {
-    const { data, error } = await sb.from("cupboard_items").insert(saved).select().single();
+    const row = {};
+    ["id", "product_id", "household_id", "created_at", "last_seen_at", ...STOCK_FIELDS].forEach((k) => { row[k] = saved[k]; });
+    const { data, error } = await sb.from("stock").insert(row).select().single();
     if (error) { flash("Couldn't put it back."); console.error(error); return; }
-    CUPBOARD.unshift(data);
+    CUPBOARD.unshift(cupRow(data));
     renderCupboard();
     flash("Put back.");
   });
@@ -1776,8 +1908,7 @@ async function boot() {
   if (booted) return;
   booted = true;
   await resolveHousehold();
-  await loadMeals();
-  await loadSideOptions();
+  await loadLibrary();
   await loadCupboard();
   await loadPlan();
   render();
@@ -1897,7 +2028,7 @@ function wireUp() {
   $("night-rating").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-rating]");
     const e2 = nightDay && plan.entries[ekey(nightDay, SLOTS[0])];
-    const meal = b && e2 && mealByName(e2.meal_name);
+    const meal = b && e2 && mealOf(e2);
     if (meal) setMealRating(meal, parseInt(b.dataset.rating, 10));
   });
   $("choose-back").addEventListener("click", showNightView);

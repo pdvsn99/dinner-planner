@@ -29,9 +29,32 @@ cloud (Supabase), so they're there on every device you log in on.
 | `config.js` | The two settings that connect the app to your database. Safe to be public. |
 | `meals.js` | Your **starter meals**. Only used once, to fill a brand-new account. After that you edit meals in the app's Meals tab. |
 | `netlify.toml` | Tells Netlify there's nothing to build — just serve the files. |
+| `db/` | The database tables (and the one-off steps that moved the old data into them). |
 
 You normally won't need to touch any of these now — everything is managed
 inside the app.
+
+---
+
+## How the data is stored
+
+Everything is linked by id, so renaming something once updates it everywhere.
+
+| Table | Holds | Links to |
+| --- | --- | --- |
+| `items` | each thing you buy (e.g. *rice*), its aisle, whether it's a staple | — |
+| `products` | each scanned barcode (e.g. *Aldi Basmati Rice 1kg*): name, brand, size | one item |
+| `stock` | what's in the cupboard: how many, how full, use-by date, where | one product |
+| `sides` | e.g. *mash* | its items (`side_items`) |
+| `meals` | name, where from, effort, nights, ❤️/👎 | its items (`meal_items`), and the sides it comes with or can have extra (`meal_sides`) |
+| `plan_entries` | a meal on a night | the meal, and the sides that night (`plan_entry_sides`) |
+| `plan_days` | nights off | — |
+| `shopping_items` | ticks and extras on the shared shopping list | items, by id |
+
+The shopping list for a week is every planned meal's items plus the items
+in each side on that night, added up. Anything with a product in stock goes
+under "check the cupboard first". Scanning a new barcode asks what item it
+counts as, once; after that every scan of it just adds to the cupboard.
 
 ---
 
