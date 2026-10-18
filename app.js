@@ -17,9 +17,10 @@ const DAYS = [
   { key: "sat",   label: "Saturday" },
   { key: "sun",   label: "Sunday" },
 ];
-// Lunch was removed — the planner now plans one dinner per day.
-// We keep a single "Dinner" slot so stored plan entries stay consistent.
-const SLOTS = ["Dinner"];
+// Each day has a lunch and a dinner. A meal is for one or the other, or
+// "Both" (stored in meals.category).
+const SLOTS = ["Lunch", "Dinner"];
+const MEAL_TIMES = ["Lunch", "Dinner", "Both"];
 
 /* ---------- state ---------- */
 let USER_ID = null;
@@ -55,6 +56,9 @@ function itemById(id) { return ITEMS.find((i) => i.id === id); }
 function itemByName(name) { const k = lc(name); return ITEMS.find((i) => lc(i.name) === k); }
 function sideById(id) { return SIDES.find((s) => s.id === id); }
 function sideByName(name) { const k = lc(name); return SIDES.find((s) => lc(s.name) === k); }
+// When a meal is eaten: "Lunch", "Dinner" or "Both". Older meals are dinners.
+function mealTime(meal) { return MEAL_TIMES.includes(meal && meal.category) ? meal.category : "Dinner"; }
+function mealFits(meal, slot) { const t = mealTime(meal); return t === "Both" || t === slot; }
 // A meal's sides: the ones it always comes with, and optional extras.
 function alwaysSides(meal) { return (meal && meal.always_sides) || []; }
 function maybeSides(meal) {
@@ -174,16 +178,19 @@ function mealMains(meal) {
 function dayIndex(dayKey) { return DAYS.findIndex((d) => d.key === dayKey); }
 
 // Everything the scorer needs about the week being planned. `chosen` maps
-// dayKey → meal name for nights already filled (including earlier picks in
-// this same roll); `avoid` maps dayKey → a meal we're re-rolling away from.
+// "day|slot" → meal name for meals already filled (including earlier picks in
+// this same roll); `avoid` maps "day|slot" → a meal we're re-rolling away from.
 function planContext(chosen, avoid) {
   return { chosen, avoid: avoid || {}, expiring: expiringIngredientSet() };
 }
-function mealScore(meal, dayKey, ctx) {
+function mealScore(meal, dayKey, slot, ctx) {
   if ((meal.rating | 0) < 0) return 0;
-  const otherNights = Object.entries(ctx.chosen).filter(([d]) => d !== dayKey);
-  if (otherNights.some(([, n]) => n === meal.name)) return 0;
-  if (ctx.avoid[dayKey] === meal.name) return 0;
+  const key = ekey(dayKey, slot);
+  const others = Object.entries(ctx.chosen).filter(([k]) => k !== key)
+    .map(([k, n]) => { const [d, s] = k.split("|"); return { d, s, n }; });
+  // Nothing twice in the same slot in a week, nor for lunch and dinner on the same day.
+  if (others.some((o) => o.n === meal.name && (o.s === slot || o.d === dayKey))) return 0;
+  if (ctx.avoid[key] === meal.name) return 0;
   let score = 10;
   const ago = daysSinceEaten(meal.name, dayKey);
   if (ago !== null) score -= ago <= 7 ? 7 : ago <= 14 ? 4 : 2;
@@ -192,16 +199,17 @@ function mealScore(meal, dayKey, ctx) {
   if (WEEKNIGHTS.includes(dayKey) && mealDifficulty(meal) >= 4) score -= 6;
   const i = dayIndex(dayKey);
   const mains = mealMains(meal);
-  const neighbours = otherNights.filter(([d]) => Math.abs(dayIndex(d) - i) === 1)
-    .map(([, n]) => mealByName(n)).filter(Boolean);
+  // The same main on neighbouring days, or for lunch and dinner on one day.
+  const neighbours = others.filter((o) => (o.s === slot && Math.abs(dayIndex(o.d) - i) === 1) || o.d === dayKey)
+    .map((o) => mealByName(o.n)).filter(Boolean);
   if (mains.length && neighbours.some((m) => mealMains(m).some((x) => mains.includes(x)))) score -= 5;
   return Math.max(score, 0.5);
 }
 // Weighted random pick. If everything scores 0 (e.g. only one meal allowed
 // that night and it's already used), fall back to any meal not marked "never".
-function smartPick(pool, dayKey, ctx) {
+function smartPick(pool, dayKey, slot, ctx) {
   if (!pool.length) return null;
-  const scored = pool.map((m) => ({ m, w: mealScore(m, dayKey, ctx) ** 2 })).filter((x) => x.w > 0);
+  const scored = pool.map((m) => ({ m, w: mealScore(m, dayKey, slot, ctx) ** 2 })).filter((x) => x.w > 0);
   if (!scored.length) {
     const ok = pool.filter((m) => (m.rating | 0) >= 0);
     return ok.length ? rand(ok) : null;
@@ -261,12 +269,12 @@ function weekTitle() {
 
 /* ---------- meal rules ---------- */
 function candidates(slot, dayKey, { treat } = { treat: false }) {
-  // No more Lunch/Dinner split — every meal is a candidate, subject only to
-  // whether it's a treat (takeaway / eating out) and which days it's allowed on.
+  // Meals for this slot (lunch / dinner / both), split by whether it's a
+  // treat (takeaway / eating out), on the days it's allowed.
   return MEALS.filter((m) => {
     const isTreat = m.location !== "Home";
     if (treat !== isTreat) return false;
-    return (m.days || []).includes(dayKey);
+    return mealFits(m, slot) && (m.days || []).includes(dayKey);
   });
 }
 // A planned night for `meal`. It comes with its usual ("always") sides only;
@@ -298,9 +306,11 @@ function entryText(entry) {
   if (s.length === 1) return `${entry.meal_name} with ${s[0]}`;
   return `${entry.meal_name} with ${s.slice(0, -1).join(", ")} & ${s[s.length - 1]}`;
 }
-// The effective state of a cell, accounting for whole-day-out.
+// The effective state of a cell. Lunch and dinner are each marked "not
+// cooking" on their own entry (status "out"); older weeks marked a dinner off
+// with a plan_days row, which still counts for dinner only.
 function cellState(dayKey, slot) {
-  if (plan.days[dayKey] && plan.days[dayKey].is_out) {
+  if (slot === "Dinner" && plan.days[dayKey] && plan.days[dayKey].is_out) {
     return { out: true, dayOut: true, note: plan.days[dayKey].note, entry: null };
   }
   const e = plan.entries[ekey(dayKey, slot)];
@@ -459,7 +469,7 @@ async function seedLibrary() {
   const items = await up("items", [...itemNames].map((name) => ({ household_id: H, name, aisle: shopAisle(name) })), "household_id,name");
   const sides = await up("sides", [...sideNames].map((name) => ({ household_id: H, name })), "household_id,name");
   const meals = await up("meals", defs.map((m) => ({
-    household_id: H, user_id: USER_ID, name: m.name, category: "Dinner", location: m.location || "Home",
+    household_id: H, user_id: USER_ID, name: m.name, category: m.category || "Dinner", location: m.location || "Home",
     difficulty: m.difficulty || DEFAULT_DIFFICULTY, days: m.days || [],
   })), "household_id,name");
   const iid = (n) => (items.find((x) => lc(x.name) === lc(n)) || {}).id;
@@ -554,18 +564,13 @@ async function deleteEntry(dayKey, slot) {
   if (error) console.error(error);
 }
 
-async function setDayOut(dayKey, isOut, note) {
-  const ws = isoDate(weekStart);
-  if (isOut) {
-    const row = { user_id: USER_ID, household_id: HOUSEHOLD_ID, week_start: ws, day: dayKey, is_out: true, note: note || null, updated_at: new Date().toISOString() };
-    plan.days[dayKey] = row;
-    const { error } = await sb.from("plan_days").upsert(row, { onConflict: "household_id,week_start,day" });
-    if (error) console.error(error);
-  } else {
-    delete plan.days[dayKey];
-    const { error } = await sb.from("plan_days").delete().eq("household_id", HOUSEHOLD_ID).eq("week_start", ws).eq("day", dayKey);
-    if (error) console.error(error);
-  }
+// Older weeks marked a dinner off with a plan_days row; this removes it.
+async function clearOldDayOut(dayKey) {
+  if (!plan.days[dayKey]) return;
+  delete plan.days[dayKey];
+  const { error } = await sb.from("plan_days").delete().eq("household_id", HOUSEHOLD_ID)
+    .eq("week_start", isoDate(weekStart)).eq("day", dayKey);
+  if (error) console.error(error);
 }
 
 async function clearWeekData() {
@@ -580,75 +585,93 @@ async function clearWeekData() {
 /* ============================================================
  *  Planner actions
  * ============================================================
- * A night is either empty, a suggestion (source "auto"), something you chose
- * or changed yourself (source "manual"), or a night off. "Suggest week" only
- * ever refills empty nights and suggestions, so anything you touched stays. */
+ * Each day has a lunch and a dinner ("slots"). A slot is either empty, a
+ * suggestion (source "auto"), something you chose or changed yourself
+ * (source "manual"), or not cooking. "Suggest week" only ever refills empty
+ * slots and suggestions, so anything you touched stays.                   */
 
 function eligible(dayKey, slot) {
-  // A slot can be filled only if it isn't out (day-level or slot-level).
+  // A slot can be filled only if it isn't marked "not cooking".
   const st = cellState(dayKey, slot);
   return !st.out;
 }
 function isChosen(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "manual"); }
 
-// Smart-fill the given nights, one at a time, so each pick knows about the
-// nights around it (including ones picked earlier in this same go).
-function smartUpdates(dayKeys, source) {
+// Smart-fill the given slots ([{day, slot}]), one at a time, so each pick
+// knows about the meals around it (including ones picked earlier in this go).
+function smartUpdates(targets, source) {
   const chosen = {}, avoid = {};
-  DAYS.forEach((d) => {
-    const e = plan.entries[ekey(d.key, SLOTS[0])];
+  const filling = new Set(targets.map((t) => ekey(t.day, t.slot)));
+  DAYS.forEach((d) => SLOTS.forEach((slot) => {
+    const key = ekey(d.key, slot);
+    const e = plan.entries[key];
     if (!e || !e.meal_name || e.status === "out") return;
-    if (dayKeys.includes(d.key)) avoid[d.key] = e.meal_name; // replacing it: try something else
-    else chosen[d.key] = e.meal_name;
-  });
+    if (filling.has(key)) avoid[key] = e.meal_name; // replacing it: try something else
+    else chosen[key] = e.meal_name;
+  }));
   const ctx = planContext(chosen, avoid);
   const updates = [];
-  dayKeys.forEach((day) => {
-    const meal = smartPick(candidates(SLOTS[0], day, { treat: false }), day, ctx);
+  targets.forEach(({ day, slot }) => {
+    const meal = smartPick(candidates(slot, day, { treat: false }), day, slot, ctx);
     if (!meal) return;
-    chosen[day] = meal.name;
-    updates.push({ day, slot: SLOTS[0], entry: makeEntry(meal, source || "auto") });
+    chosen[ekey(day, slot)] = meal.name;
+    updates.push({ day, slot, entry: makeEntry(meal, source || "auto") });
   });
   return updates;
 }
 
-// Fill every night that's empty or still a suggestion.
+// Fill every lunch and dinner that's empty or still a suggestion.
 async function suggestWeek() {
-  const days = DAYS.map((d) => d.key)
-    .filter((day) => eligible(day, SLOTS[0]) && !isChosen(plan.entries[ekey(day, SLOTS[0])]));
-  if (!days.length) { flash("Every night is already chosen. Use ⇄ on a night to change it."); return; }
-  const updates = smartUpdates(days, "auto");
+  const targets = DAYS.flatMap((d) => SLOTS.map((slot) => ({ day: d.key, slot })))
+    .filter(({ day, slot }) => eligible(day, slot) && !isChosen(plan.entries[ekey(day, slot)]));
+  if (!targets.length) { flash("Every meal is already chosen. Use ⇄ on one to change it."); return; }
+  const updates = smartUpdates(targets, "auto");
   if (!updates.length) { flash("No meals to suggest — add some in the Meals tab."); return; }
   await saveEntries(updates);
   render();
+  const missed = new Set(targets.filter((t) => !updates.some((u) => u.day === t.day && u.slot === t.slot)).map((t) => t.slot));
+  if (missed.size) flash(`No ${[...missed].map((s) => s.toLowerCase()).join(" or ")} meals to suggest — mark some as ${[...missed].join(" / ")} or Both in the Meals tab.`);
 }
 
 // Wipe the whole week (meals and nights off) for a fresh start.
 async function startWeekAgain() {
-  if (!confirm("Start this week again?\n\nThis clears every night, including ones you chose and nights off.")) return;
+  if (!confirm("Start this week again?\n\nThis clears every lunch and dinner, including ones you chose and ones marked not cooking.")) return;
   await clearWeekData();
   render();
 }
 
-// "Something else" for one night. The new meal counts as your choice.
-async function swapNight(dayKey) {
-  const [u] = smartUpdates([dayKey], "manual");
-  if (!u) { flash("No other meals fit this night."); return; }
-  await saveEntry(dayKey, SLOTS[0], u.entry);
+// "Something else" for one lunch or dinner. The new meal counts as your choice.
+async function swapSlot(dayKey, slot) {
+  const [u] = smartUpdates([{ day: dayKey, slot }], "manual");
+  if (!u) { flash(`No other ${slot.toLowerCase()} meals fit this day.`); return; }
+  await saveEntry(dayKey, slot, u.entry);
   render();
 }
 
-// Put a specific meal on a night (from the meal list, or a takeaway).
-async function setNightMeal(dayKey, meal) {
-  if (plan.days[dayKey] && plan.days[dayKey].is_out) await setDayOut(dayKey, false);
-  await saveEntry(dayKey, SLOTS[0], makeEntry(meal, "manual"));
+// Put a specific meal on a lunch or dinner (from the meal list, or a takeaway).
+async function setSlotMeal(dayKey, slot, meal) {
+  if (slot === "Dinner") await clearOldDayOut(dayKey);
+  await saveEntry(dayKey, slot, makeEntry(meal, "manual"));
   render();
 }
 
-async function clearNight(dayKey) { await deleteEntry(dayKey, SLOTS[0]); render(); }
+async function clearSlot(dayKey, slot) {
+  if (slot === "Dinner") await clearOldDayOut(dayKey);
+  await deleteEntry(dayKey, slot);
+  render();
+}
 
-async function setNotCooking(dayKey, isOut) {
-  await setDayOut(dayKey, isOut, null);
+// Mark a lunch or dinner as not cooking (or cooking after all). The meal that
+// was planned is kept underneath, so "cooking after all" brings it back.
+async function setNotCooking(dayKey, slot, isOut) {
+  const e = plan.entries[ekey(dayKey, slot)];
+  if (!isOut) {
+    if (slot === "Dinner") await clearOldDayOut(dayKey);
+    if (e && e.meal_name) await saveEntry(dayKey, slot, { ...e, status: "planned" });
+    else if (e) await deleteEntry(dayKey, slot);
+  } else {
+    await saveEntry(dayKey, slot, { ...(e || {}), status: "out", source: "manual" });
+  }
   render();
 }
 
@@ -658,7 +681,6 @@ async function setNotCooking(dayKey, isOut) {
 function buildShoppingList() {
   const items = {};
   DAYS.forEach((d) => {
-    if (plan.days[d.key] && plan.days[d.key].is_out) return;
     SLOTS.forEach((slot) => {
       const st = cellState(d.key, slot);
       if (st.out || !st.entry || !st.entry.meal_name) return;
@@ -686,81 +708,93 @@ function render() {
   renderShopping();
 }
 
-// Summary line in the planner hero, e.g. "5 dinners planned · 1 night off".
+// Summary line in the planner hero, e.g. "5 dinners · 3 lunches · 4 to plan".
 function renderStats() {
   const box = $("week-stats");
   if (!box) return;
-  let planned = 0, empty = 0, off = 0;
-  DAYS.forEach((d) => {
-    const st = cellState(d.key, SLOTS[0]);
+  const planned = { Lunch: 0, Dinner: 0 };
+  let empty = 0, off = 0;
+  DAYS.forEach((d) => SLOTS.forEach((slot) => {
+    const st = cellState(d.key, slot);
     if (st.out) off += 1;
-    else if (st.entry && st.entry.meal_name) planned += 1;
+    else if (st.entry && st.entry.meal_name) planned[slot] += 1;
     else empty += 1;
-  });
+  }));
   const chips = [];
-  if (planned) chips.push(`<span class="stat-chip">${planned} dinner${planned === 1 ? "" : "s"} planned</span>`);
-  if (empty)   chips.push(`<span class="stat-chip">${empty} to plan</span>`);
-  if (off)     chips.push(`<span class="stat-chip">${off} night${off === 1 ? "" : "s"} off</span>`);
+  if (planned.Dinner) chips.push(`<span class="stat-chip">${planned.Dinner} dinner${planned.Dinner === 1 ? "" : "s"} planned</span>`);
+  if (planned.Lunch)  chips.push(`<span class="stat-chip">${planned.Lunch} lunch${planned.Lunch === 1 ? "" : "es"} planned</span>`);
+  if (empty)          chips.push(`<span class="stat-chip">${empty} to plan</span>`);
+  if (off)            chips.push(`<span class="stat-chip">${off} not cooking</span>`);
   box.innerHTML = chips.join("");
 }
 
 function renderWeekNav() { $("week-title").textContent = weekTitle(); }
 
+// Each day is a card with its date, then a line for lunch and one for dinner.
 function renderGrid() {
   const list = $("grid-body");
   list.innerHTML = "";
-  const slot = SLOTS[0]; // only "Dinner" now
   const todayIso = isoDate(new Date());
 
   DAYS.forEach((d) => {
     const dateObj = dateForDay(d.key);
-    const st = cellState(d.key, slot);
-    const entry = st.out ? null : st.entry;
-    const meal = entry && entry.meal_name ? mealOf(entry) : null;
-
     const row = document.createElement("div");
     row.className = "day-row";
     if (isoDate(dateObj) === todayIso) row.classList.add("is-today");
     row.innerHTML =
       `<div class="day-date"><span class="d-name">${d.label.slice(0, 3).toUpperCase()}</span>` +
       `<span class="d-num">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span></div>`;
-
-    const main = document.createElement("div");
-    main.className = "day-main";
-    if (st.out) {
-      row.classList.add("is-off");
-      main.innerHTML = `<div class="day-meal dim">Not cooking</div>` +
-        (st.note ? `<div class="day-hint">${escapeHtml(st.note)}</div>` : "");
-    } else if (entry && entry.meal_name) {
-      const isTreat = meal && meal.location !== "Home";
-      if (isTreat) row.classList.add("is-treat");
-      const tags = [];
-      if (isTreat) tags.push(`<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`);
-      if (meal && (meal.rating | 0) > 0) tags.push(`<span class="tag">❤️</span>`);
-      if (meal && !isTreat && mealUsesExpiringStock(meal)) tags.push(`<span class="tag expiring">🕒 uses up food</span>`);
-      main.innerHTML = `<div class="day-meal">${escapeHtml(entry.meal_name)}</div>` +
-        (tags.length ? `<div class="day-tags">${tags.join("")}</div>` : "");
-    } else {
-      row.classList.add("is-empty");
-      main.innerHTML = `<div class="day-meal dim">Nothing yet</div>`;
-    }
-    row.appendChild(main);
-
-    // ⇄ on planned/empty nights: give me something else (or a first idea).
-    if (!st.out) {
-      const swap = document.createElement("button");
-      swap.type = "button";
-      swap.className = "swap-btn";
-      swap.textContent = "⇄";
-      swap.title = entry && entry.meal_name ? "Something else" : "Suggest something";
-      swap.setAttribute("aria-label", `${swap.title} for ${d.label}`);
-      swap.addEventListener("click", (ev) => { ev.stopPropagation(); swapNight(d.key); });
-      row.appendChild(swap);
-    }
-
-    row.addEventListener("click", () => openNight(d.key));
+    const slots = document.createElement("div");
+    slots.className = "day-slots";
+    SLOTS.forEach((slot) => slots.appendChild(slotRow(d, slot)));
+    row.appendChild(slots);
     list.appendChild(row);
   });
+}
+
+function slotRow(d, slot) {
+  const st = cellState(d.key, slot);
+  const entry = st.out ? null : st.entry;
+  const meal = entry && entry.meal_name ? mealOf(entry) : null;
+
+  const row = document.createElement("div");
+  row.className = "slot-row slot-" + slot.toLowerCase();
+  const main = document.createElement("div");
+  main.className = "day-main";
+  const label = `<div class="slot-label">${slot}</div>`;
+  if (st.out) {
+    row.classList.add("is-off");
+    main.innerHTML = label + `<div class="day-meal dim">Not cooking</div>` +
+      (st.note ? `<div class="day-hint">${escapeHtml(st.note)}</div>` : "");
+  } else if (entry && entry.meal_name) {
+    const isTreat = meal && meal.location !== "Home";
+    if (isTreat) row.classList.add("is-treat");
+    const tags = [];
+    if (isTreat) tags.push(`<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`);
+    if (meal && (meal.rating | 0) > 0) tags.push(`<span class="tag">❤️</span>`);
+    if (meal && !isTreat && mealUsesExpiringStock(meal)) tags.push(`<span class="tag expiring">🕒 uses up food</span>`);
+    main.innerHTML = label + `<div class="day-meal">${escapeHtml(entry.meal_name)}</div>` +
+      (tags.length ? `<div class="day-tags">${tags.join("")}</div>` : "");
+  } else {
+    row.classList.add("is-empty");
+    main.innerHTML = label + `<div class="day-meal dim">Nothing yet</div>`;
+  }
+  row.appendChild(main);
+
+  // ⇄ on planned/empty slots: give me something else (or a first idea).
+  if (!st.out) {
+    const swap = document.createElement("button");
+    swap.type = "button";
+    swap.className = "swap-btn";
+    swap.textContent = "⇄";
+    swap.title = entry && entry.meal_name ? "Something else" : "Suggest something";
+    swap.setAttribute("aria-label", `${swap.title} for ${d.label} ${slot.toLowerCase()}`);
+    swap.addEventListener("click", (ev) => { ev.stopPropagation(); swapSlot(d.key, slot); });
+    row.appendChild(swap);
+  }
+
+  row.addEventListener("click", () => openNight(d.key, slot));
+  return row;
 }
 
 /* The "got it" ticks and any extra items are shared by the household: each
@@ -1003,12 +1037,14 @@ function escapeHtml(s) {
 /* ============================================================
  *  Meal picker
  * ============================================================ */
-let nightDay = null;       // the night the sheet is open for
+let nightDay = null;       // the day the sheet is open for
+let nightSlot = "Dinner";  // …and whether it's lunch or dinner
 let chooseMode = "all";    // "all" meals, or only "treat"s
 const byName = (a, b) => a.name.localeCompare(b.name);
 
-function openNight(dayKey) {
+function openNight(dayKey, slot) {
   nightDay = dayKey;
+  nightSlot = slot || "Dinner";
   showNightView();
   $("modal").hidden = false;
 }
@@ -1020,17 +1056,18 @@ function showNightView() {
   renderNight();
 }
 
-// The night sheet: what's on, what it comes with, extras to tick, and actions.
+// The sheet for one lunch or dinner: what's on, what it comes with, extras
+// to tick, and actions.
 function renderNight() {
   if (!nightDay) return;
   const d = DAYS.find((x) => x.key === nightDay);
-  $("modal-title").textContent = `${d.label} ${dateForDay(nightDay).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
-  const st = cellState(nightDay, SLOTS[0]);
+  $("modal-title").textContent = `${d.label} ${nightSlot.toLowerCase()} · ${dateForDay(nightDay).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+  const st = cellState(nightDay, nightSlot);
   const entry = st.out ? null : st.entry;
   const meal = entry && entry.meal_name ? mealOf(entry) : null;
   const isHome = !!meal && meal.location === "Home";
 
-  $("night-meal").textContent = st.out ? "Not cooking tonight" : (entry && entry.meal_name) || "Nothing planned yet";
+  $("night-meal").textContent = st.out ? "Not cooking" : (entry && entry.meal_name) || "Nothing planned yet";
   $("night-meal").classList.toggle("dim", st.out || !(entry && entry.meal_name));
 
   const always = alwaysSides(meal);
@@ -1061,15 +1098,16 @@ function renderNight() {
 
   $("night-swap").textContent = entry && entry.meal_name ? "⇄ Something else" : "⇄ Suggest something";
   $("night-swap").hidden = st.out;
-  $("night-off").textContent = st.out ? "↩ Cooking after all" : "🚫 Not cooking tonight";
+  $("night-off").textContent = st.out ? "↩ Cooking after all" : `🚫 Not cooking ${nightSlot === "Lunch" ? "lunch" : "tonight"}`;
+  $("night-clear").textContent = `Clear this ${nightSlot.toLowerCase()}`;
   $("night-clear").hidden = !(entry && entry.meal_name);
 }
 
 async function toggleExtra(name) {
-  const e = plan.entries[ekey(nightDay, SLOTS[0])];
+  const e = plan.entries[ekey(nightDay, nightSlot)];
   if (!e) return;
   const sides = (e.sides || []).includes(name) ? e.sides.filter((x) => x !== name) : [...(e.sides || []), name];
-  await saveEntry(nightDay, SLOTS[0], { ...e, sides, source: "manual" });
+  await saveEntry(nightDay, nightSlot, { ...e, sides, source: "manual" });
   renderNight();
   render();
 }
@@ -1084,7 +1122,7 @@ async function setMealRating(meal, rating) {
   flash(next > 0 ? `❤️ ${meal.name} will come up more.` : next < 0 ? `👎 ${meal.name} won't be suggested.` : "Back to normal.");
 }
 
-/* ---------- choosing a meal for the night ---------- */
+/* ---------- choosing a meal for a lunch or dinner ---------- */
 function openChooser(mode) {
   chooseMode = mode;
   $("night-view").hidden = true;
@@ -1097,16 +1135,20 @@ function openChooser(mode) {
 function chooseGroups(query) {
   const q = (query || "").trim().toLowerCase();
   const match = (m) => !q || m.name.toLowerCase().includes(q);
-  const home = { label: "Home cooked", items: MEALS.filter((m) => m.location === "Home" && match(m)).sort(byName) };
+  const home = MEALS.filter((m) => m.location === "Home" && match(m)).sort(byName);
+  const fits = { label: "Home cooked", items: home.filter((m) => mealFits(m, nightSlot)) };
   const treats = { label: "Takeaway & eating out", items: MEALS.filter((m) => m.location !== "Home" && match(m)).sort(byName) };
-  return (chooseMode === "treat" ? [treats] : [home, treats]).filter((g) => g.items.length);
+  // Meals usually had at the other time are still there, at the bottom.
+  const other = SLOTS.find((s) => s !== nightSlot);
+  const rest = { label: `Usually for ${other.toLowerCase()}`, items: home.filter((m) => !mealFits(m, nightSlot)) };
+  return (chooseMode === "treat" ? [treats] : [fits, treats, rest]).filter((g) => g.items.length);
 }
 function renderChooseList(query) {
   const list = $("choose-list");
   list.innerHTML = "";
   const groups = chooseGroups(query);
   if (!groups.length) { list.innerHTML = '<p class="muted empty-note">No meals match.</p>'; return; }
-  const current = (plan.entries[ekey(nightDay, SLOTS[0])] || {}).meal_name;
+  const current = (plan.entries[ekey(nightDay, nightSlot)] || {}).meal_name;
   groups.forEach((g) => {
     if (chooseMode !== "treat") {
       const head = document.createElement("div");
@@ -1122,7 +1164,7 @@ function renderChooseList(query) {
       opt.innerHTML = `<span>${escapeHtml(m.name)}</span>` +
         (with_.length ? `<span class="choose-sub">with ${escapeHtml(with_.join(" & "))}</span>` : "");
       opt.addEventListener("click", async () => {
-        await setNightMeal(nightDay, m);
+        await setSlotMeal(nightDay, nightSlot, m);
         showNightView();
       });
       list.appendChild(opt);
@@ -1154,9 +1196,9 @@ function renderDayCheckboxes(selectedDays) {
 function editorDays() { return [...document.querySelectorAll("#m-days input:checked")].map((c) => c.value); }
 function renderDaysSummary() {
   const days = editorDays();
-  $("m-days-summary").textContent = days.length === DAYS.length ? "(every night)"
+  $("m-days-summary").textContent = days.length === DAYS.length ? "(every day)"
     : days.length ? "(" + DAYS.filter((d) => days.includes(d.key)).map((d) => d.label.slice(0, 3)).join(", ") + ")"
-    : "(no nights — it won't be suggested)";
+    : "(no days — it won't be suggested)";
 }
 
 /* ---------- chip editor ----------
@@ -1225,6 +1267,7 @@ function openMealEditor(meal) {
   $("meal-modal-title").textContent = meal ? "Edit meal" : "Add meal";
   $("m-name").value = meal ? meal.name : "";
   setRadio("m-loc", meal ? meal.location : "Home");
+  setRadio("m-time", meal ? mealTime(meal) : "Dinner");
   setRadio("m-effort", effortBucket(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY));
   setRadio("m-rating", meal ? Math.sign(meal.rating | 0) : 0);
   $("side-names").innerHTML = SIDES.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
@@ -1257,7 +1300,7 @@ async function saveMeal() {
   const buy = location === "Home" ? chipValues("m-buy") : [];
   const row = {
     name,
-    category: "Dinner", // kept for the database column; lunch no longer exists
+    category: getRadio("m-time") || "Dinner", // Lunch, Dinner or Both
     location,
     difficulty,
     rating: location === "Home" ? (parseInt(getRadio("m-rating"), 10) || 0) : 0,
@@ -1293,7 +1336,7 @@ async function deleteMeal() {
   renderMealsList();
 }
 
-let mealTypeFilter = "all"; // all | home | treat
+let mealTypeFilter = "all"; // all | home | treat | Lunch | Dinner
 
 function renderMealsList() {
   const box = $("meals-list");
@@ -1304,6 +1347,7 @@ function renderMealsList() {
     if (q && !m.name.toLowerCase().includes(q)) return false;
     if (mealTypeFilter === "home" && m.location !== "Home") return false;
     if (mealTypeFilter === "treat" && m.location === "Home") return false;
+    if (SLOTS.includes(mealTypeFilter) && !mealFits(m, mealTypeFilter)) return false;
     return true;
   });
   if (!shown.length) { box.innerHTML = '<p class="muted empty-note">No meals match.</p>'; return; }
@@ -1318,6 +1362,7 @@ function renderMealsList() {
       tags.push(`<span class="tag">Home</span>`);
       tags.push(`<span class="tag">${({ quick: "Quick", normal: "Normal", big: "Big cook" })[effortBucket(mealDifficulty(m))]}</span>`);
     }
+    tags.push(`<span class="tag">${({ Lunch: "Lunch", Dinner: "Dinner", Both: "Lunch & dinner" })[mealTime(m)]}</span>`);
     if ((m.rating | 0) > 0) tags.push(`<span class="tag">❤️ Favourite</span>`);
     if ((m.rating | 0) < 0) tags.push(`<span class="tag">👎 Not suggested</span>`);
     const always = alwaysSides(m), maybe = maybeSides(m);
@@ -2015,19 +2060,19 @@ function wireUp() {
   // Night sheet
   $("modal-close").addEventListener("click", closeNight);
   $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeNight(); });
-  $("night-swap").addEventListener("click", async () => { if (nightDay) { await swapNight(nightDay); renderNight(); } });
+  $("night-swap").addEventListener("click", async () => { if (nightDay) { await swapSlot(nightDay, nightSlot); renderNight(); } });
   $("night-choose").addEventListener("click", () => openChooser("all"));
   $("night-treat").addEventListener("click", () => openChooser("treat"));
   $("night-off").addEventListener("click", async () => {
     if (!nightDay) return;
-    const out = !!(plan.days[nightDay] && plan.days[nightDay].is_out);
-    await setNotCooking(nightDay, !out);
+    const out = cellState(nightDay, nightSlot).out;
+    await setNotCooking(nightDay, nightSlot, !out);
     if (out) renderNight(); else closeNight();
   });
-  $("night-clear").addEventListener("click", async () => { if (nightDay) { await clearNight(nightDay); renderNight(); } });
+  $("night-clear").addEventListener("click", async () => { if (nightDay) { await clearSlot(nightDay, nightSlot); renderNight(); } });
   $("night-rating").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-rating]");
-    const e2 = nightDay && plan.entries[ekey(nightDay, SLOTS[0])];
+    const e2 = nightDay && plan.entries[ekey(nightDay, nightSlot)];
     const meal = b && e2 && mealOf(e2);
     if (meal) setMealRating(meal, parseInt(b.dataset.rating, 10));
   });

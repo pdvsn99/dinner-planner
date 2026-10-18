@@ -1,6 +1,6 @@
 # 🍽️ Dinner Planner
 
-A web app for planning the week's dinners. Roll the dice on
+A web app for planning the week's lunches and dinners. Roll the dice on
 meals, treat yourself, mark days you're out, and get an automatic shopping
 list. Your meals and plans are saved to your own private account in the
 cloud (Supabase), so they're there on every device you log in on.
@@ -9,13 +9,13 @@ cloud (Supabase), so they're there on every device you log in on.
 
 | Thing | What it does |
 | --- | --- |
-| ✨ **Suggest week** | Fills the week with dinners, each with its usual sides. Suggestions favour ❤️ meals and anything that uses up food about to go off, and avoid what you've had lately, the same main two nights running, 👎 "don't suggest" meals and big cooks on Mon–Thu. It only refills nights you haven't touched. |
-| ⇄ **on a night** | Something else for that night. |
-| **Tap a night** | See what it comes with and tick any extras; ❤️ / 👎 the meal; choose a specific meal, a takeaway or eating out; or mark it *not cooking tonight*. |
+| ✨ **Suggest week** | Fills every lunch and dinner in the week, each with its usual sides. Lunches come from meals marked *Lunch* or *Both*, dinners from *Dinner* or *Both*. Suggestions favour ❤️ meals and anything that uses up food about to go off, and avoid what you've had lately, the same main two days running (or at lunch and dinner on one day), 👎 "don't suggest" meals and big cooks on Mon–Thu. It only refills meals you haven't touched. |
+| ⇄ **on a lunch or dinner** | Something else for that meal. |
+| **Tap a lunch or dinner** | See what it comes with and tick any extras; ❤️ / 👎 the meal; choose a specific meal, a takeaway or eating out; or mark it *not cooking* (lunch and dinner each have their own). |
 | **Start week again** | Clears the whole week, including your own picks and nights off. |
 | ‹ › **week arrows** | Move between real calendar weeks. Past and future weeks are all saved. |
 | 🛒 **Shopping list** | Builds itself from the week, counting every ingredient and side, grouped by aisle. Things your Cupboard says you already have go in a "check the cupboard first" section. Ticks and extras are shared, so you both see the same list. Ignores days/meals marked out. |
-| 🍲 **Meals tab** | Add, edit and delete meals: where it's from, how long it takes (Quick / Normal / Big cook), what to buy, what it **comes with** every time, **optional extras**, and (if needed) which nights it's allowed on. |
+| 🍲 **Meals tab** | Add, edit and delete meals: whether it's for **lunch, dinner or both**, where it's from, how long it takes (Quick / Normal / Big cook), what to buy, what it **comes with** every time, **optional extras**, and (if needed) which days it's allowed on. |
 | 🥔 **Sides tab** | Your list of sides, each with what to buy for it (e.g. mash = potatoes, butter, milk). |
 | 🗄️ **Cupboard tab** | Scan food in; tap **Used some** or **Used it up** as you go (with undo). |
 
@@ -46,9 +46,9 @@ Everything is linked by id, so renaming something once updates it everywhere.
 | `products` | each scanned barcode (e.g. *Aldi Basmati Rice 1kg*): name, brand, size | one item |
 | `stock` | what's in the cupboard: how many, how full, use-by date, where | one product |
 | `sides` | e.g. *mash* | its items (`side_items`) |
-| `meals` | name, where from, effort, nights, ❤️/👎 | its items (`meal_items`), and the sides it comes with or can have extra (`meal_sides`) |
-| `plan_entries` | a meal on a night | the meal, and the sides that night (`plan_entry_sides`) |
-| `plan_days` | nights off | — |
+| `meals` | name, lunch / dinner / both (`category`), where from, effort, nights, ❤️/👎 | its items (`meal_items`), and the sides it comes with or can have extra (`meal_sides`) |
+| `plan_entries` | a meal at lunch or dinner (`slot`) on a day, or *not cooking* (`status` = out) | the meal, and the sides that night (`plan_entry_sides`) |
+| `plan_days` | dinners off from older weeks (new ones are `plan_entries` marked out) | — |
 | `shopping_items` | ticks and extras on the shared shopping list | items, by id |
 
 The shopping list for a week is every planned meal's items plus the items
