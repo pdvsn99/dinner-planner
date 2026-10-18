@@ -443,6 +443,9 @@ input[type="date"].input { color-scheme: dark; }
 .shop-meal { font-size: 12px; color: var(--muted); }
 .shop-qty { font-size: 14px; color: var(--text-2); white-space: nowrap; }
 .shop-del { color: var(--muted); }
+.shop-scan { flex-shrink: 0; }
+.shop-head-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#shop-reader { margin-top: 12px; }
 
 /* ---------- cupboard ---------- */
 .cup-intro { font-size: 14px; margin-bottom: 16px; max-width: 680px; }
@@ -593,7 +596,7 @@ input[type="date"].input { color-scheme: dark; }
  * ============================================================ */
 @media print {
   .site-header, .tabs-bottom, .week-actions, .page-head button,
-  .shop-progress-wrap, .inline-add, .foot, .shop-del, .shop-check { display: none !important; }
+  .shop-progress-wrap, .inline-add, .foot, .shop-del, .shop-scan, .shop-check { display: none !important; }
   body { background: #fff; color: #000; padding: 0; }
   .tab-panel { padding: 0; }
   .shop-row { border-color: #ccc; }

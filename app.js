@@ -728,7 +728,7 @@ function renderStats() {
   box.innerHTML = chips.join("");
 }
 
-function renderWeekNav() { $("week-title").textContent = weekTitle(); }
+function renderWeekNav() { $("week-title").textContent = $("shop-week-title").textContent = weekTitle(); }
 
 // Each day is a card with its date, then a line for lunch and one for dinner.
 function renderGrid() {
@@ -934,6 +934,7 @@ function cupboardHas(item) {
 function shoppingRows() {
   const rows = buildShoppingList().map((it) => ({
     key: "i:" + it.item.id,
+    itemId: it.item.id,
     label: cap(it.label),
     qty: it.count > 1 ? "×" + it.count : "",
     sub: [...it.meals].join(", "),
@@ -944,7 +945,7 @@ function shoppingRows() {
   SHOP.extras.forEach((label) => {
     const known = itemByName(label);
     rows.push({
-      key: "x:" + label.toLowerCase(), label: cap(label), qty: "", sub: "Added by you", extra: true,
+      key: "x:" + label.toLowerCase(), itemId: known ? known.id : null, label: cap(label), qty: "", sub: "Added by you", extra: true,
       aisle: (known && known.aisle) || shopAisle(label), inCupboard: null,
     });
   });
@@ -963,13 +964,13 @@ function renderShopping() {
 
   if (rows.length === 0) {
     box.innerHTML = '<p class="muted empty-note">Your shopping list will appear here once there are meals in the week.</p>';
-    if (count) count.textContent = weekTitle();
+    if (count) count.textContent = "";
     if (progWrap) progWrap.hidden = true;
     return;
   }
 
   const gotCount = rows.filter((r) => done.has(r.key)).length;
-  if (count) count.textContent = `${weekTitle()} · ${rows.length} item${rows.length === 1 ? "" : "s"}`;
+  if (count) count.textContent = `${rows.length} item${rows.length === 1 ? "" : "s"}`;
 
   if (progWrap) {
     progWrap.hidden = false;
@@ -990,6 +991,7 @@ function renderShopping() {
         ${r.inCupboard && !done.has(r.key) ? `<span class="shop-meal shop-have">🗄️ You have: ${escapeHtml(r.inCupboard.product_name || r.inCupboard.ingredient_name)}${r.inCupboard.quantity > 1 ? " ×" + r.inCupboard.quantity : ""}${r.inCupboard.fullness ? " (" + escapeHtml(r.inCupboard.fullness) + ")" : ""}</span>` : ""}
       </span>
       ${r.qty ? `<span class="shop-qty">${escapeHtml(r.qty)}</span>` : ""}
+      ${r.itemId && !done.has(r.key) ? `<button class="icon-btn shop-scan" data-scan="${escapeHtml(r.key)}" aria-label="Scan ${escapeHtml(r.label)} into the cupboard">📷</button>` : ""}
       ${r.extra ? `<button class="icon-btn shop-del" data-del="${escapeHtml(r.label)}" aria-label="Remove ${escapeHtml(r.label)}">🗑</button>` : ""}
     </div>`;
 
@@ -1011,6 +1013,68 @@ function renderShopping() {
 }
 
 // Copy the still-to-get items to the clipboard as a plain text list, by aisle.
+/* ---------- scan from the list ----------
+ * The 📷 on a row opens the camera for that one item. Whatever's scanned goes
+ * in the cupboard counted as that item (unless the barcode already counts as
+ * something else), and the row is ticked off.                              */
+let shopScan = null;    // { key, item } of the row being scanned
+let shopScanner = null;
+function shopScanStatus(msg, cls) {
+  const el = $("shop-scan-status");
+  el.textContent = msg || "";
+  el.className = "cup-status" + (cls ? " " + cls : " muted");
+}
+function stopReader(r) {
+  try { r.stop().then(() => r.clear()).catch(() => {}); } catch (_) {} // throws if it never started
+}
+function openShopScan(key) {
+  const row = shoppingRows().find((r) => r.key === key);
+  const item = row && itemById(row.itemId);
+  if (!item) return;
+  shopScan = { key, item };
+  $("scan-item-name").textContent = item.name;
+  shopScanStatus("");
+  $("scan-modal").hidden = false;
+  cupEnsureAudio();
+  if (typeof Html5Qrcode === "undefined") { shopScanStatus("Scanner didn't load — check your connection and reload.", "err"); return; }
+  const scanner = barcodeReader("shop-reader");
+  shopScanner = scanner;
+  scanner.start({ facingMode: "environment" }, BARCODE_CAMERA, (text) => shopScanCommit(text.trim()), () => {})
+    .then(() => {
+      if (shopScanner !== scanner) stopReader(scanner); // closed while the camera was starting
+      else shopScanStatus("Point at the barcode — it scans automatically.");
+    })
+    .catch((err) => {
+      if (shopScanner === scanner) shopScanner = null;
+      shopScanStatus("Couldn't start the camera: " + err + ". Allow camera access, or scan a photo instead.", "err");
+    });
+}
+function closeShopScan() {
+  $("scan-modal").hidden = true;
+  shopScan = null;
+  if (shopScanner) stopReader(shopScanner);
+  shopScanner = null;
+}
+async function shopScanCommit(code) {
+  if (!shopScan || !code) return;
+  const { key, item } = shopScan;
+  cupFeedback();
+  closeShopScan();
+  let product = PRODUCTS.find((x) => x.barcode === code);
+  const isNew = !product;
+  if (isNew) product = await insertProduct({ barcode: code, item_id: item.id });
+  else if (!product.item_id) await updateProduct(product.id, { item_id: item.id });
+  if (!product) return;
+  await addOneToCupboard(product);
+  if (!SHOP.done.has(key)) toggleShopDone(key); else renderShopping();
+  flash(`${cap(item.name)} added to the cupboard and ticked off.`);
+  if (isNew) {
+    // Fill in its name and size from the barcode database, keeping what it counts as.
+    const info = await cupLookup(code);
+    if (info && info.name) await updateProduct(product.id, cupInfoPatch(info));
+  }
+}
+
 async function copyShoppingList() {
   const rows = shoppingRows().filter((r) => !SHOP.done.has(r.key) && !r.inCupboard);
   if (!rows.length) { flash("Nothing left to get."); return; }
@@ -1586,6 +1650,38 @@ function cupSetStatus(msg, cls) {
 }
 
 /* ---- scanning ---- */
+// A barcode reader on the element with this id (the Cupboard and the
+// shopping list each have their own).
+function barcodeReader(elId) {
+  return new Html5Qrcode(elId, {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+    ],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+  });
+}
+const BARCODE_CAMERA = {
+  fps: 15,
+  qrbox: (vw, vh) => ({ width: Math.floor(vw * 0.9), height: Math.floor(vh * 0.72) }),
+  videoConstraints: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+};
+// Read a barcode from a photo, then call onCode with it. setStatus shows progress and errors.
+function scanPhotoFile(file, onCode, setStatus) {
+  if (!file) return;
+  cupEnsureAudio();
+  if (typeof Html5Qrcode === "undefined") { setStatus("Scanner didn't load — reload the page.", "err"); return; }
+  setStatus("Reading photo…");
+  const fs = barcodeReader("cup-filescan");
+  const done = () => { try { fs.clear(); } catch (_) {} };
+  fs.scanFileV2(file, false).then((res) => {
+    const code = (res && res.decodedText ? res.decodedText : "").trim();
+    done();
+    if (code) onCode(code);
+    else setStatus("No barcode found — try again, filling the frame with just the barcode.", "err");
+  }).catch(() => { done(); setStatus("No barcode found — get closer, straight on, in focus.", "err"); });
+}
 function cupStartScan() {
   if (cupScanning) { cupStopScan(); return; }
   cupEnsureAudio();
@@ -1594,20 +1690,8 @@ function cupStartScan() {
     cupSetStatus("Scanner didn't load — check your connection and reload.", "err");
     return;
   }
-  cupScanner = new Html5Qrcode("cup-reader", {
-    formatsToSupport: [
-      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
-      Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
-      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
-    ],
-    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-  });
-  const qrbox = (vw, vh) => ({ width: Math.floor(vw * 0.9), height: Math.floor(vh * 0.72) });
-  const config = {
-    fps: 15, qrbox,
-    videoConstraints: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
-  };
-  cupScanner.start({ facingMode: "environment" }, config,
+  cupScanner = barcodeReader("cup-reader");
+  cupScanner.start({ facingMode: "environment" }, BARCODE_CAMERA,
     (text) => cupOnDecode(text.trim()), () => {}
   ).then(() => {
     cupScanning = true;
@@ -1643,37 +1727,25 @@ function cupOnDecode(code) {
   cupCommit(code);
   cupPauseBriefly();
 }
-function cupDecodePhoto(file) {
-  if (!file) return;
-  cupEnsureAudio();
-  if (typeof Html5Qrcode === "undefined") { cupSetStatus("Scanner didn't load — reload the page.", "err"); return; }
-  cupSetStatus("Reading photo…");
-  const fs = new Html5Qrcode("cup-filescan", {
-    formatsToSupport: [
-      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
-      Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
-      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
-    ],
-    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-  });
-  const done = () => { try { fs.clear(); } catch (_) {} };
-  fs.scanFileV2(file, false).then((res) => {
-    const code = (res && res.decodedText ? res.decodedText : "").trim();
-    done();
-    if (code) cupCommit(code);
-    else cupSetStatus("No barcode found — try again, filling the frame with just the barcode.", "err");
-  }).catch(() => { done(); cupSetStatus("No barcode found — get closer, straight on, in focus.", "err"); });
+function cupDecodePhoto(file) { scanPhotoFile(file, cupCommit, cupSetStatus); }
+// One more of a product in the cupboard: on its row without a use-by date if
+// there is one, a new row otherwise.
+async function addOneToCupboard(product) {
+  const open = CUPBOARD.find((x) => x.product_id === product.id && !x.expiry_date);
+  if (open) await updateCupboardItem(open.id, { quantity: (open.quantity || 0) + 1 });
+  else await insertStock({ product_id: product.id, quantity: 1, location: "Cupboard" });
+}
+// A product's name, brand and size from what cupLookup found online.
+function cupInfoPatch(info) {
+  const sz = cupParseSize(info.size);
+  return { name: info.name, brand: info.brand || null, size_text: info.size || null, size_value: sz.value, size_unit: sz.unit };
 }
 // Add one scanned container as its own row, then fill in details from the database.
 async function cupCommit(code) {
   cupFeedback();
   const known = PRODUCTS.find((x) => x.barcode === code);
   if (known) {
-    // Seen this barcode before: one more of it (on the row without a use-by
-    // date, if there is one; a new row otherwise).
-    const open = CUPBOARD.find((x) => x.product_id === known.id && !x.expiry_date);
-    if (open) await updateCupboardItem(open.id, { quantity: (open.quantity || 0) + 1 });
-    else await insertStock({ product_id: known.id, quantity: 1, location: "Cupboard" });
+    await addOneToCupboard(known);
     renderCupboard();
     cupSetStatus("Added another " + (known.name || code), "ok");
     return;
@@ -1685,13 +1757,8 @@ async function cupCommit(code) {
   cupSetStatus("Added " + code + " — looking up…");
   const info = await cupLookup(code);
   if (info && info.name) {
-    const sz = cupParseSize(info.size);
     const match = itemByName(info.name);
-    await updateProduct(product.id, {
-      name: info.name, brand: info.brand || null,
-      size_text: info.size || null, size_value: sz.value, size_unit: sz.unit,
-      item_id: match ? match.id : null,
-    });
+    await updateProduct(product.id, { ...cupInfoPatch(info), item_id: match ? match.id : null });
     renderCupboard();
     cupSetStatus("Found: " + info.name + (info.size ? " (" + info.size + ")" : "") +
       (match ? "" : ". What does it count as? Fill in “Counts as” below."), "ok");
@@ -2029,6 +2096,9 @@ function wireUp() {
   $("week-prev").addEventListener("click", () => gotoWeek(addDays(weekStart, -7)));
   $("week-next").addEventListener("click", () => gotoWeek(addDays(weekStart, 7)));
   $("week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
+  $("shop-week-prev").addEventListener("click", () => gotoWeek(addDays(weekStart, -7)));
+  $("shop-week-next").addEventListener("click", () => gotoWeek(addDays(weekStart, 7)));
+  $("shop-week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
 
   // Planner actions (lock / roll)
   $("btn-suggest").addEventListener("click", suggestWeek);
@@ -2052,6 +2122,8 @@ function wireUp() {
   if (shopBody) shopBody.addEventListener("click", (e) => {
     const del = e.target.closest("[data-del]");
     if (del) { e.stopPropagation(); removeShopExtra(del.dataset.del); return; }
+    const scan = e.target.closest("[data-scan]");
+    if (scan) { e.stopPropagation(); openShopScan(scan.dataset.scan); return; }
     const row = e.target.closest(".shop-row");
     if (row && row.dataset.key) toggleShopDone(row.dataset.key);
   });
@@ -2091,6 +2163,17 @@ function wireUp() {
     if (e.key !== "Escape") return;
     if (!$("modal").hidden) closeNight();
     if (!$("meal-modal").hidden) closeMealEditor();
+    if (!$("scan-modal").hidden) closeShopScan();
+  });
+
+  // Scan a shopping-list item into the cupboard
+  $("scan-modal-close").addEventListener("click", closeShopScan);
+  $("scan-modal").addEventListener("click", (e) => { if (e.target.id === "scan-modal") closeShopScan(); });
+  $("shop-scan-photo").addEventListener("click", () => $("shop-scan-photo-input").click());
+  $("shop-scan-photo-input").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    scanPhotoFile(f, shopScanCommit, shopScanStatus);
+    e.target.value = "";
   });
 }
 

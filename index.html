@@ -110,7 +110,17 @@
           <h1 class="display page-title">Shopping</h1>
           <div id="shopping-count" class="page-sub"></div>
         </div>
-        <button id="btn-copy" class="btn btn-outline btn-sm">⧉ Copy list</button>
+        <div class="shop-head-actions">
+          <div class="week-nav">
+            <button id="shop-week-prev" class="round-btn" aria-label="Previous week">‹</button>
+            <div class="week-label">
+              <strong id="shop-week-title">This week</strong>
+              <button id="shop-week-today" class="link-btn">Go to this week</button>
+            </div>
+            <button id="shop-week-next" class="round-btn" aria-label="Next week">›</button>
+          </div>
+          <button id="btn-copy" class="btn btn-outline btn-sm">⧉ Copy list</button>
+        </div>
       </div>
 
       <div id="shopping-progress-wrap" class="shop-progress-wrap" hidden>
@@ -330,6 +340,24 @@
         <span class="spacer"></span>
         <button id="meal-cancel" class="btn btn-ghost">Cancel</button>
         <button id="meal-save" class="btn btn-primary">Save meal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Scan a shopping-list item into the cupboard ===== -->
+  <div id="scan-modal" class="modal-overlay" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="scan-modal-title">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <div class="modal-head">
+        <h2 id="scan-modal-title" class="display">Got it already?</h2>
+        <button id="scan-modal-close" class="round-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">Scan the barcode on your <strong id="scan-item-name"></strong>. It goes in your Cupboard and comes off the list.</p>
+        <div id="shop-reader" class="cup-reader"></div>
+        <p id="shop-scan-status" class="cup-status muted"></p>
+        <button id="shop-scan-photo" class="btn btn-outline">🖼️ Scan a photo instead</button>
+        <input id="shop-scan-photo-input" type="file" accept="image/*" hidden />
       </div>
     </div>
   </div>
