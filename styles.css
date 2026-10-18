@@ -254,24 +254,34 @@ input[type="date"].input { color-scheme: dark; }
 .note-body { font-size: 14px; color: var(--text-2); line-height: 1.45; }
 
 /* ---------- day rows ---------- */
+/* A day is a card: the date, then a lunch line and a dinner line. */
 .day-row {
-  display: flex; align-items: center; gap: 16px;
-  min-height: 82px; padding: 14px 14px 14px 20px;
+  display: flex; align-items: stretch; gap: 16px;
+  padding: 10px 10px 10px 20px;
   background: var(--surface); border: 1px solid var(--line-2);
-  border-radius: var(--r-md); cursor: pointer;
+  border-radius: var(--r-md);
+}
+.day-row.is-today { box-shadow: inset 3px 0 0 var(--accent); }
+.day-slots { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.slot-row {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 62px; padding: 8px 6px 8px 12px;
+  border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer;
   transition: border-color .15s, background .15s;
 }
-.day-row:hover { border-color: var(--text-2); }
-.day-row.is-today { box-shadow: inset 3px 0 0 var(--accent); }
-.day-row.is-empty { background: var(--bg-2); border-style: dashed; border-color: var(--line-2); }
-.day-row.is-treat { background: var(--treat-bg); border-color: var(--treat-line); }
-.day-row.is-off { background: var(--bg-2); border-color: var(--line); }
+.slot-row:hover { border-color: var(--text-2); }
+.slot-row.is-empty { background: var(--bg-2); border-style: dashed; border-color: var(--line-2); }
+.slot-row.is-treat { background: var(--treat-bg); border-color: var(--treat-line); }
+.slot-row.is-off { background: var(--bg-2); border-color: var(--line); }
+.slot-label { font-size: 11px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+.slot-lunch .day-meal { font-size: 21px; }
+.slot-lunch .swap-btn { width: 40px; height: 40px; font-size: 18px; }
 
-.day-date { width: 62px; flex-shrink: 0; display: flex; flex-direction: column; }
+.day-date { width: 62px; flex-shrink: 0; display: flex; flex-direction: column; padding-top: 10px; }
 .day-date .d-name { font-family: var(--display); font-size: 28px; line-height: 1; letter-spacing: .5px; }
 .day-date .d-num { font-size: 12px; color: var(--muted); }
 
-.day-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.day-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .day-meal { font-family: var(--display); font-size: 26px; line-height: 1; letter-spacing: .5px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .day-meal.dim { color: var(--muted); }
@@ -558,8 +568,11 @@ input[type="date"].input { color-scheme: dark; }
   .week-actions { justify-content: stretch; }
   .week-actions .btn { flex: 1; padding: 0 12px; }
 
-  .day-row { gap: 12px; padding: 12px 10px 12px 14px; }
+  .day-row { gap: 10px; padding: 8px 8px 8px 14px; }
+  .day-date { width: 48px; }
+  .slot-row { padding: 6px 4px 6px 10px; gap: 8px; }
   .day-meal { font-size: 22px; }
+  .slot-lunch .day-meal { font-size: 19px; }
 
   .meals-list { grid-template-columns: 1fr 1fr; }
 

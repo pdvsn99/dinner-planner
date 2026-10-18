@@ -81,21 +81,21 @@
       </div>
 
       <div class="planner-layout">
-        <div id="grid-body" class="week-list" aria-label="Weekly dinner plan"></div>
+        <div id="grid-body" class="week-list" aria-label="Weekly lunch and dinner plan"></div>
 
         <aside class="planner-aside">
           <div class="card note-card">
             <div class="note-ico" aria-hidden="true">✨</div>
             <div>
               <div class="note-title">How it works</div>
-              <div class="note-body"><strong>Suggest week</strong> fills the nights for you. Don't fancy one? Tap <strong>⇄</strong> for something else, or tap the night to choose. Anything you change stays put next time you press Suggest week.</div>
+              <div class="note-body"><strong>Suggest week</strong> fills every lunch and dinner for you. Don't fancy one? Tap <strong>⇄</strong> for something else, or tap it to choose. Anything you change stays put next time you press Suggest week.</div>
             </div>
           </div>
           <div class="card note-card">
             <div class="note-ico" aria-hidden="true">🧠</div>
             <div>
               <div class="note-title">What it suggests</div>
-              <div class="note-body">More of your ❤️ meals and anything that uses up food about to go off. Less of what you've had lately, the same main two nights running, and big cooks on Mon–Thu.</div>
+              <div class="note-body">More of your ❤️ meals and anything that uses up food about to go off. Less of what you've had lately, the same main two days running (or for lunch and dinner on one day), and big cooks on Mon–Thu. Lunches come from meals marked Lunch or Both.</div>
             </div>
           </div>
         </aside>
@@ -148,6 +148,8 @@
         <button class="pill is-active" data-mfilter="all" role="tab">All</button>
         <button class="pill" data-mfilter="home" role="tab">Home cooked</button>
         <button class="pill" data-mfilter="treat" role="tab">Treats</button>
+        <button class="pill" data-mfilter="Lunch" role="tab">Lunch</button>
+        <button class="pill" data-mfilter="Dinner" role="tab">Dinner</button>
       </div>
       <div id="meals-list" class="meals-list"></div>
     </section>
@@ -250,7 +252,7 @@
             <button id="night-swap" class="btn btn-outline night-act">⇄ Something else</button>
             <button id="night-choose" class="btn btn-outline night-act">🔍 Choose a meal</button>
             <button id="night-treat" class="btn btn-outline night-act">🍕 Takeaway / eating out</button>
-            <button id="night-off" class="btn btn-outline night-act">🚫 Not cooking tonight</button>
+            <button id="night-off" class="btn btn-outline night-act">🚫 Not cooking</button>
           </div>
           <p class="foot"><button id="night-clear" class="link-btn">Clear this night</button></p>
         </div>
@@ -276,6 +278,13 @@
       <div class="modal-body">
         <label class="field-label" for="m-name">Name</label>
         <input id="m-name" class="input" type="text" placeholder="e.g. Bangers and mash" />
+
+        <div class="field-label">When do you have it?</div>
+        <div class="seg" id="m-time">
+          <label><input type="radio" name="m-time" value="Lunch" /> Lunch</label>
+          <label><input type="radio" name="m-time" value="Dinner" /> Dinner</label>
+          <label><input type="radio" name="m-time" value="Both" /> Both</label>
+        </div>
 
         <div class="field-label">Where's it from?</div>
         <div class="seg" id="m-loc">
@@ -303,7 +312,7 @@
         </div>
 
         <details id="m-days-wrap" class="days-wrap">
-          <summary>Only on certain nights? <span id="m-days-summary" class="hint-inline"></span></summary>
+          <summary>Only on certain days? <span id="m-days-summary" class="hint-inline"></span></summary>
           <div id="m-days" class="chip-set"></div>
         </details>
 
