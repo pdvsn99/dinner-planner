@@ -9,15 +9,17 @@ cloud (Supabase), so they're there on every device you log in on.
 
 | Thing | What it does |
 | --- | --- |
-| 🎲 **Generate week** | Fills every empty dinner with a random *home* meal, only using meals allowed on that day, and picks sides at random. Skips days you've marked out. |
+| 🎲 **Roll nights** | Fills empty (or unlocked) dinners with *home* meals allowed on that day. Rolls are weighted: ❤️ favourites and meals that use up expiring cupboard food come up more; meals eaten in the last few weeks, 👎 "don't suggest" meals, the same main two nights running and hard cooks on Mon–Thu come up less (or never). |
 | 🔀 **Swap selected** | Tap a meal, then re-roll just that one. |
 | ✨ **Treat selected / Treat the week!** | Swap a meal (or the whole week) for takeaways / eating out. |
 | ✏️ **Edit selected / the pencil** | Choose an exact meal and tick the sides you want. |
 | **⋯ on a day** | Mark a whole day *out of the planner* (away on a trip, etc.) with a note. Tap **↩** to bring it back. |
 | 🚫 **Mark out** (in the meal picker) | Mark a single meal as out (e.g. dinner out on Friday) with a note. |
 | ‹ › **week arrows** | Move between real calendar weeks. Past and future weeks are all saved. |
-| 🛒 **Shopping list** | Builds itself from the week, counting every ingredient and side. Ignores days/meals marked out. |
-| 🍲 **Meals tab** | Add, edit and delete your meals, sides and rules — no spreadsheet or code needed. |
+| 🛒 **Shopping list** | Builds itself from the week, counting every ingredient and side, grouped by aisle. Things your Cupboard says you already have go in a "check the cupboard first" section. Ticks and extras are shared, so you both see the same list. Ignores days/meals marked out. |
+| 🍲 **Meals tab** | Add, edit and delete your meals and rules. Each side is either ★ *always* (comes with the meal every time) or *maybe* (picked at random). Mark meals ❤️ favourite or 👎 don't suggest. |
+| 🥔 **Sides tab** | Your list of sides, each with what to buy for it (e.g. mash = potatoes, butter, milk). |
+| 🗄️ **Cupboard tab** | Scan food in; tap **Used some** or **Used it up** as you go (with undo). |
 
 ---
 

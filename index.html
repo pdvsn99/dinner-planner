@@ -92,6 +92,13 @@
               <div class="note-body">Anything you choose yourself locks automatically. Rolling only fills empty or unlocked nights.</div>
             </div>
           </div>
+          <div class="card note-card">
+            <div class="note-ico" aria-hidden="true">🎲</div>
+            <div>
+              <div class="note-title">Rolls are smart</div>
+              <div class="note-body">The dice favour your ❤️ meals and anything that uses up food about to go off. They avoid meals you've had lately, the same main two nights running, and hard cooks on Mon–Thu.</div>
+            </div>
+          </div>
         </aside>
       </div>
     </section>
@@ -246,6 +253,11 @@
           <div class="field-label">Sides <span id="pick-hint" class="hint-inline"></span></div>
           <div id="pick-sides" class="chip-set"></div>
         </div>
+        <div id="pick-rating" class="pick-rating" hidden>
+          <span class="field-label">How was it?</span>
+          <button type="button" class="btn btn-ghost btn-sm" data-rating="1">❤️ Favourite</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-rating="-1">👎 Don't suggest</button>
+        </div>
         <div class="quick-row quick-row-sm">
           <button id="pick-clear" class="btn btn-ghost btn-sm">🧹 Clear this night</button>
         </div>
@@ -274,6 +286,13 @@
           <option value="Home">Home (cooked)</option>
           <option value="Takeaway">Takeaway (treat)</option>
           <option value="Eating Out">Eating Out (treat)</option>
+        </select>
+
+        <label class="field-label" for="m-rating">How do you feel about it?</label>
+        <select id="m-rating" class="input">
+          <option value="1">❤️ Favourite — suggest it more</option>
+          <option value="0">😐 It's fine</option>
+          <option value="-1">👎 Don't suggest it (still pickable)</option>
         </select>
 
         <label class="field-label" for="m-effort">How much effort?</label>

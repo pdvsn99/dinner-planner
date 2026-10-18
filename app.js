@@ -169,32 +169,87 @@ function mealUsesExpiringStock(meal, set) {
   });
 }
 
-// Pick a meal whose effort is closest to `want`. Effort still leads: we only
-// look within a small tolerance of the ideal. As a gentle nudge, if any of
-// those meals would use up soon-to-expire stock, we prefer one of them (and,
-// when `usedNames` is given, one not already placed this week, so a whole
-// week doesn't collapse onto the same dish).
-function pickNearestDifficulty(pool, want, usedNames) {
+/* ---------- smart auto-planning ----------
+ * When the dice fill a night we don't pick purely at random any more. Each
+ * allowed meal gets a score and we pick at random *weighted* by that score, so
+ * good fits come up far more often but the week still feels fresh:
+ *   - "never suggest" meals are skipped, and nothing repeats within a week
+ *   - meals eaten in the last few weeks are pushed down (last week the most)
+ *   - favourites are pushed up
+ *   - meals that use up soon-to-expire cupboard stock are pushed up
+ *   - the same main (sausages, chicken…) two nights running is pushed down
+ *   - hard meals are pushed down on Mon–Thu                                  */
+const WEEKNIGHTS = ["mon", "tue", "wed", "thurs"];
+const MAINS = [
+  ["chicken", ["chicken"]], ["beef", ["beef", "steak", "mince"]], ["pork", ["pork", "gammon", "ham", "bacon", "pancetta"]],
+  ["sausage", ["sausage"]], ["lamb", ["lamb"]], ["turkey", ["turkey"]], ["duck", ["duck"]],
+  ["fish", ["fish", "tuna", "salmon", "cod", "prawn"]], ["egg", ["egg"]],
+];
+// The main proteins in a meal, e.g. ["sausage"] for bangers and mash.
+function mealMains(meal) {
+  const text = [meal.name, ...(meal.ingredients || [])].join(" ").toLowerCase();
+  return MAINS.filter(([, words]) => words.some((w) => text.includes(w))).map(([k]) => k);
+}
+function dayIndex(dayKey) { return DAYS.findIndex((d) => d.key === dayKey); }
+
+// Everything the scorer needs about the week being planned. `chosen` maps
+// dayKey → meal name for nights already filled (including earlier picks in
+// this same roll); `avoid` maps dayKey → a meal we're re-rolling away from.
+function planContext(chosen, avoid) {
+  return { chosen, avoid: avoid || {}, expiring: expiringIngredientSet() };
+}
+function mealScore(meal, dayKey, ctx) {
+  if ((meal.rating | 0) < 0) return 0;
+  const otherNights = Object.entries(ctx.chosen).filter(([d]) => d !== dayKey);
+  if (otherNights.some(([, n]) => n === meal.name)) return 0;
+  if (ctx.avoid[dayKey] === meal.name) return 0;
+  let score = 10;
+  const ago = daysSinceEaten(meal.name, dayKey);
+  if (ago !== null) score -= ago <= 7 ? 7 : ago <= 14 ? 4 : 2;
+  if ((meal.rating | 0) > 0) score += 4;
+  if (mealUsesExpiringStock(meal, ctx.expiring)) score += 5;
+  if (WEEKNIGHTS.includes(dayKey) && mealDifficulty(meal) >= 4) score -= 6;
+  const i = dayIndex(dayKey);
+  const mains = mealMains(meal);
+  const neighbours = otherNights.filter(([d]) => Math.abs(dayIndex(d) - i) === 1)
+    .map(([, n]) => mealByName(n)).filter(Boolean);
+  if (mains.length && neighbours.some((m) => mealMains(m).some((x) => mains.includes(x)))) score -= 5;
+  return Math.max(score, 0.5);
+}
+// Weighted random pick. If everything scores 0 (e.g. only one meal allowed
+// that night and it's already used), fall back to any meal not marked "never".
+function smartPick(pool, dayKey, ctx) {
   if (!pool.length) return null;
-  let best = Infinity;
-  pool.forEach((m) => { best = Math.min(best, Math.abs(mealDifficulty(m) - want)); });
-
-  const TOL = 1.0;
-  const exp = expiringIngredientSet();
-  if (exp.size) {
-    let near = pool.filter((m) =>
-      Math.abs(mealDifficulty(m) - want) <= best + TOL && mealUsesExpiringStock(m, exp));
-    if (usedNames) {
-      const unused = near.filter((m) => !usedNames.has(m.name));
-      if (unused.length) near = unused;
-    }
-    if (near.length) return rand(near);
+  const scored = pool.map((m) => ({ m, w: mealScore(m, dayKey, ctx) ** 2 })).filter((x) => x.w > 0);
+  if (!scored.length) {
+    const ok = pool.filter((m) => (m.rating | 0) >= 0);
+    return ok.length ? rand(ok) : null;
   }
+  let r = Math.random() * scored.reduce((t, x) => t + x.w, 0);
+  for (const x of scored) { r -= x.w; if (r <= 0) return x.m; }
+  return scored[scored.length - 1].m;
+}
 
-  // No expiring stock in play (or none usable): original behaviour — a random
-  // pick from the meals whose effort ties for closest to the target.
-  const ties = pool.filter((m) => Math.abs(Math.abs(mealDifficulty(m) - want) - best) < 1e-9);
-  return rand(ties);
+// Meals eaten in the few weeks before the shown week: name → latest date.
+let HISTORY = new Map();
+const HISTORY_WEEKS = 4;
+async function loadHistory() {
+  const from = isoDate(addDays(weekStart, -7 * HISTORY_WEEKS));
+  const { data, error } = await sb.from("plan_entries").select("week_start,day,meal_name,status")
+    .eq("household_id", HOUSEHOLD_ID).gte("week_start", from).lt("week_start", isoDate(weekStart));
+  HISTORY = new Map();
+  if (error) { console.error(error); return; }
+  (data || []).forEach((e) => {
+    if (!e.meal_name || e.status === "out") return;
+    const [y, mo, da] = e.week_start.split("-").map(Number);
+    const when = addDays(new Date(y, mo - 1, da), Math.max(0, dayIndex(e.day)));
+    const prev = HISTORY.get(e.meal_name);
+    if (!prev || when > prev) HISTORY.set(e.meal_name, when);
+  });
+}
+function daysSinceEaten(name, dayKey) {
+  const when = HISTORY.get(name);
+  return when ? Math.round((dateForDay(dayKey) - when) / 864e5) : null;
 }
 
 /* ---------- dates ---------- */
@@ -389,6 +444,8 @@ async function loadPlan() {
   const [{ data: entries }, { data: days }] = await Promise.all([
     sb.from("plan_entries").select("*").eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
     sb.from("plan_days").select("*").eq("household_id", HOUSEHOLD_ID).eq("week_start", ws),
+    loadHistory(),
+    loadShopItems(),
   ]);
   (entries || []).forEach((e) => { plan.entries[ekey(e.day, e.slot)] = e; });
   (days || []).forEach((d) => { plan.days[d.day] = d; });
@@ -476,16 +533,35 @@ function eligible(dayKey, slot) {
 function isLocked(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "manual"); }
 function isRolled(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "auto"); }
 
+// Smart-fill the given nights, one at a time, so each pick knows about the
+// nights around it (including ones picked earlier in this same roll).
+function smartUpdates(dayKeys) {
+  const chosen = {}, avoid = {};
+  DAYS.forEach((d) => {
+    const e = plan.entries[ekey(d.key, SLOTS[0])];
+    if (!e || !e.meal_name || e.status === "out") return;
+    if (dayKeys.includes(d.key)) avoid[d.key] = e.meal_name; // re-rolling: try something else
+    else chosen[d.key] = e.meal_name;
+  });
+  const ctx = planContext(chosen, avoid);
+  const updates = [];
+  dayKeys.forEach((day) => {
+    const meal = smartPick(candidates(SLOTS[0], day, { treat: false }), day, ctx);
+    if (!meal) return;
+    chosen[day] = meal.name;
+    updates.push({ day, slot: SLOTS[0], entry: makeEntry(meal, "auto") });
+  });
+  return updates;
+}
+
 // Roll only the empty nights (leave locked picks, rolled meals and nights off).
 async function rollEmptyNights() {
-  const updates = [];
-  DAYS.forEach((d) => {
-    if (!eligible(d.key, SLOTS[0])) return;
-    const e = plan.entries[ekey(d.key, SLOTS[0])];
-    if (e && e.meal_name && e.status !== "out") return; // already has something
-    const pool = candidates(SLOTS[0], d.key, { treat: false });
-    if (pool.length) updates.push({ day: d.key, slot: SLOTS[0], entry: makeEntry(rand(pool), "auto") });
+  const days = DAYS.map((d) => d.key).filter((day) => {
+    if (!eligible(day, SLOTS[0])) return false;
+    const e = plan.entries[ekey(day, SLOTS[0])];
+    return !(e && e.meal_name && e.status !== "out"); // only nights with nothing yet
   });
+  const updates = smartUpdates(days);
   if (!updates.length) { flash("No empty nights to roll."); return; }
   await saveEntries(updates);
   render();
@@ -494,14 +570,9 @@ async function rollEmptyNights() {
 // Re-roll every night that isn't locked (empty nights and previously-rolled
 // ones), leaving your own picks and nights off untouched.
 async function reRollUnlocked() {
-  const updates = [];
-  DAYS.forEach((d) => {
-    if (!eligible(d.key, SLOTS[0])) return;
-    const e = plan.entries[ekey(d.key, SLOTS[0])];
-    if (isLocked(e)) return; // your pick — leave it
-    const pool = candidates(SLOTS[0], d.key, { treat: false });
-    if (pool.length) updates.push({ day: d.key, slot: SLOTS[0], entry: makeEntry(rand(pool), "auto") });
-  });
+  const days = DAYS.map((d) => d.key)
+    .filter((day) => eligible(day, SLOTS[0]) && !isLocked(plan.entries[ekey(day, SLOTS[0])]));
+  const updates = smartUpdates(days);
   if (!updates.length) { flash("Nothing to re-roll — lock or add a meal first."); return; }
   await saveEntries(updates);
   render();
@@ -520,7 +591,9 @@ async function fillCell(dayKey, slot, { treat = false, lock = false } = {}) {
   let pool = candidates(slot, dayKey, { treat });
   if (treat && pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
   if (pool.length === 0) { flash("No matching meals — add some in the Meals tab."); return; }
-  await saveEntry(dayKey, slot, makeEntry(rand(pool), lock ? "manual" : "auto"));
+  const meal = treat ? rand(pool) : smartUpdates([dayKey]).map((u) => mealByName(u.entry.meal_name))[0];
+  if (!meal) { flash("No matching meals — add some in the Meals tab."); return; }
+  await saveEntry(dayKey, slot, makeEntry(meal, lock ? "manual" : "auto"));
   render();
 }
 
@@ -687,7 +760,7 @@ function renderGrid() {
         tags.innerHTML = `<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`;
       } else {
         const bits = [`<span class="tag">Home</span>`];
-        if (meal) bits.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(meal)))}</span>`);
+        if (meal && (meal.rating | 0) > 0) bits.push(`<span class="tag">❤️ Favourite</span>`);
         if (entry.sides && entry.sides.length) bits.push(`<span class="tag">With ${escapeHtml(entry.sides.join(", "))}</span>`);
         if (meal && mealUsesExpiringStock(meal)) bits.push(`<span class="tag expiring">🕒 use soon</span>`);
         tags.innerHTML = bits.join("");
@@ -735,45 +808,143 @@ function renderGrid() {
   });
 }
 
-/* The "got it" ticks and any extra items are remembered per week on this
- * device (no login needed, no database change). */
-function shopStateKey() { return "dp-shop-" + isoDate(weekStart); }
-function loadShopState() {
-  try { const s = JSON.parse(localStorage.getItem(shopStateKey())); return s && typeof s === "object" ? s : {}; }
-  catch (_) { return {}; }
+/* The "got it" ticks and any extra items are shared by the household: each
+ * one is a row in `shopping_items` for that week, so ticking something on one
+ * phone shows on the other. (Ticks used to live on each device only; any left
+ * over from then are uploaded once, the first time a week is opened.)       */
+let SHOP = { done: new Set(), extras: [] };
+let _shopPoll = null;
+function legacyShopKey() { return "dp-shop-" + isoDate(weekStart); }
+
+async function loadShopItems() {
+  const ws = isoDate(weekStart);
+  const { data, error } = await sb.from("shopping_items").select("kind,key,label")
+    .eq("household_id", HOUSEHOLD_ID).eq("week_start", ws).order("created_at");
+  if (error) { console.error(error); return false; }
+  const next = { done: new Set(), extras: [] };
+  (data || []).forEach((r) => { if (r.kind === "done") next.done.add(r.key); else next.extras.push(r.label); });
+  const changed = [...next.done].sort().join("|") !== [...SHOP.done].sort().join("|")
+    || next.extras.join("|") !== SHOP.extras.join("|");
+  SHOP = next;
+  await uploadLegacyShopState(ws);
+  return changed;
 }
-function saveShopState(s) { try { localStorage.setItem(shopStateKey(), JSON.stringify(s)); } catch (_) {} }
-function shopExtras() { const s = loadShopState(); return Array.isArray(s.extras) ? s.extras : []; }
-function shopDoneSet() { const s = loadShopState(); return new Set(Array.isArray(s.done) ? s.done : []); }
+async function uploadLegacyShopState(ws) {
+  let old = null;
+  try { old = JSON.parse(localStorage.getItem(legacyShopKey())); } catch (_) {}
+  if (!old || typeof old !== "object") return;
+  const rows = [
+    ...(Array.isArray(old.done) ? old.done : []).map((key) => ({ kind: "done", key, label: key })),
+    ...(Array.isArray(old.extras) ? old.extras : []).map((label) => ({ kind: "extra", key: label.toLowerCase(), label })),
+  ].map((r) => ({ ...r, household_id: HOUSEHOLD_ID, user_id: USER_ID, week_start: ws }));
+  if (rows.length) {
+    const { error } = await sb.from("shopping_items")
+      .upsert(rows, { onConflict: "household_id,week_start,kind,key", ignoreDuplicates: true });
+    if (error) { console.error(error); return; }
+    rows.forEach((r) => { if (r.kind === "done") SHOP.done.add(r.key); else if (!SHOP.extras.includes(r.label)) SHOP.extras.push(r.label); });
+  }
+  try { localStorage.removeItem(legacyShopKey()); } catch (_) {}
+}
+async function addShopRow(kind, key, label) {
+  const { error } = await sb.from("shopping_items").upsert(
+    { household_id: HOUSEHOLD_ID, user_id: USER_ID, week_start: isoDate(weekStart), kind, key, label },
+    { onConflict: "household_id,week_start,kind,key", ignoreDuplicates: true });
+  if (error) { flash("Couldn't save — check your connection."); console.error(error); }
+}
+async function removeShopRows(kind, keys) {
+  if (!keys.length) return;
+  const { error } = await sb.from("shopping_items").delete().eq("household_id", HOUSEHOLD_ID)
+    .eq("week_start", isoDate(weekStart)).eq("kind", kind).in("key", keys);
+  if (error) { flash("Couldn't save — check your connection."); console.error(error); }
+}
+
+// While the Shopping tab is open, check for the other person's ticks.
+function startShopPolling() {
+  stopShopPolling();
+  _shopPoll = setInterval(async () => {
+    if (document.hidden) return;
+    if (await loadShopItems()) renderShopping();
+  }, 8000);
+}
+function stopShopPolling() { clearInterval(_shopPoll); _shopPoll = null; }
 
 function addShopExtra(label) {
   const clean = (label || "").trim();
   if (!clean) return;
-  const s = loadShopState();
-  s.extras = shopExtras();
-  if (!s.extras.some((x) => x.toLowerCase() === clean.toLowerCase())) s.extras.push(clean);
-  saveShopState(s);
+  if (SHOP.extras.some((x) => x.toLowerCase() === clean.toLowerCase())) return;
+  SHOP.extras.push(clean);
   renderShopping();
+  addShopRow("extra", clean.toLowerCase(), clean);
 }
 function removeShopExtra(label) {
-  const s = loadShopState();
-  s.extras = shopExtras().filter((x) => x !== label);
-  saveShopState(s);
+  SHOP.extras = SHOP.extras.filter((x) => x !== label);
+  SHOP.done.delete("x:" + label.toLowerCase());
   renderShopping();
+  removeShopRows("extra", [label.toLowerCase()]);
+  removeShopRows("done", ["x:" + label.toLowerCase()]);
 }
 function toggleShopDone(key) {
-  const s = loadShopState();
-  const done = shopDoneSet();
-  if (done.has(key)) done.delete(key); else done.add(key);
-  s.done = [...done];
-  saveShopState(s);
+  const had = SHOP.done.has(key);
+  if (had) SHOP.done.delete(key); else SHOP.done.add(key);
   renderShopping();
+  if (had) removeShopRows("done", [key]); else addShopRow("done", key, key);
 }
 function untickAllShop() {
-  const s = loadShopState();
-  s.done = [];
-  saveShopState(s);
+  const keys = [...SHOP.done];
+  SHOP.done.clear();
   renderShopping();
+  removeShopRows("done", keys);
+}
+
+/* ---------- aisles ----------
+ * Rows are grouped roughly in the order you walk round Aldi. The first group
+ * whose words appear in an item wins, so the more specific groups (frozen,
+ * jars and tins) are checked before the general ones.                        */
+const AISLES = [
+  ["Frozen", ["frozen", "oven chips", "fries", "wedges", "hash brown", "yorkshire", "onion rings", "dinosaur",
+    "fish burger", "breaded", "southern fried", "chicken bites", "chicken burgers", "ice cream"]],
+  ["Tins, jars & dry", ["sauce", "tin", "chopped tomatoes", "plum tomatoes", "purée", "puree", "passata", "baked beans",
+    "kidney beans", "mushy peas", "pasta", "spaghetti", "macaroni", "pappardelle", "lasagne", "noodle", "rice", "stock",
+    "gravy", "stuffing", "flour", "pesto", "mayo", "salsa", "oil", "seasoning", "spice", "tortilla chips", "crackers",
+    "popadoms", "kit", "taco", "gherkins", "croutons", "dressing", "crispy onions", "sweetcorn", "jalapeño", "jalapeno"]],
+  ["Meat & fish", ["chicken", "beef", "mince", "steak", "pork", "sausage", "bacon", "ham", "lamb", "turkey", "duck",
+    "fish", "salmon", "cod", "prawn", "pancetta", "pepperoni", "kebab", "meatballs"]],
+  ["Fridge", ["milk", "cheese", "butter", "cream", "egg", "yoghurt", "yogurt", "mozzarella", "parmesan", "pecorino",
+    "houmous", "hummus", "coleslaw", "pizza dough", "guacamole"]],
+  ["Bread", ["bread", "bun", "rolls", "wraps", "tortilla", "naan", "panini", "bagel", "pancakes", "toast"]],
+  ["Fruit & veg", ["potato", "carrot", "onion", "pepper", "tomato", "lettuce", "cucumber", "mushroom", "garlic",
+    "broccoli", "cauliflower", "parsnip", "green beans", "rocket", "salad", "lemon", "lime", "avocado", "apple", "banana"]],
+];
+const AISLE_ICON = { "Fruit & veg": "🥕", "Bread": "🍞", "Meat & fish": "🥩", "Fridge": "🧀", "Tins, jars & dry": "🥫", "Frozen": "❄️", "Other": "🛒" };
+const AISLE_ORDER = ["Fruit & veg", "Bread", "Meat & fish", "Fridge", "Tins, jars & dry", "Frozen", "Other"];
+function shopAisle(label) {
+  const t = (label || "").toLowerCase();
+  const hit = AISLES.find(([, words]) => words.some((w) => t.includes(w)));
+  return hit ? hit[0] : "Other";
+}
+
+/* ---------- cupboard check ----------
+ * An item counts as "probably in the cupboard" when the two names are the
+ * same once plurals and describing words are ignored, e.g. "rice" = "basmati
+ * rice", "eggs" = "free range eggs", "beef stock cubes" = "beef stock". Any
+ * other extra word means a different thing: "chicken" ≠ "chicken stock",
+ * "peppers" ≠ "black pepper", "tomatoes" ≠ "peeled tomatoes".               */
+const stem = (w) => w.replace(/(es|s)$/, "");
+const DESCRIBING_WORDS = new Set([
+  "light", "plain", "whole", "free", "range", "scottish", "british", "slightly", "salted", "unsalted", "spreadable",
+  "seeded", "brioche", "cooked", "basmati", "long", "grain", "jasmine", "fresh", "large", "small", "extra", "mature",
+  "mild", "organic", "original", "classic", "reduced", "fat", "low", "cubes", "granules", "pouch", "tin", "tinned",
+  "jar", "pack", "frozen",
+].map(stem));
+function nameWords(s) {
+  return String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1).map(stem)
+    .filter((w) => !DESCRIBING_WORDS.has(w));
+}
+function cupboardHas(label) {
+  const want = [...new Set(nameWords(label))].sort().join(" ");
+  if (!want) return null;
+  return CUPBOARD.find((it) => (it.quantity || 0) > 0
+    && [...new Set(nameWords(it.ingredient_name))].sort().join(" ") === want) || null;
 }
 
 // The full list of shopping rows for the week: meal ingredients + your extras.
@@ -785,9 +956,13 @@ function shoppingRows() {
     sub: [...it.meals].join(", "),
     extra: false,
   }));
-  shopExtras().forEach((label) => rows.push({
+  SHOP.extras.forEach((label) => rows.push({
     key: "x:" + label.toLowerCase(), label: cap(label), qty: "", sub: "Added by you", extra: true,
   }));
+  rows.forEach((r) => {
+    r.aisle = shopAisle(r.label);
+    r.inCupboard = r.extra ? null : cupboardHas(r.label);
+  });
   return rows;
 }
 
@@ -798,7 +973,7 @@ function renderShopping() {
   if (!box) return;
 
   const rows = shoppingRows();
-  const done = shopDoneSet();
+  const done = SHOP.done;
 
   if (rows.length === 0) {
     box.innerHTML = '<p class="muted empty-note">Your shopping list will appear here once there are meals in the week.</p>';
@@ -816,7 +991,8 @@ function renderShopping() {
     $("shop-progress-bar").style.width = Math.round((gotCount / rows.length) * 100) + "%";
   }
 
-  const toGet = rows.filter((r) => !done.has(r.key));
+  const toGet = rows.filter((r) => !done.has(r.key) && !r.inCupboard);
+  const maybeGot = rows.filter((r) => !done.has(r.key) && r.inCupboard);
   const got = rows.filter((r) => done.has(r.key));
 
   const rowHtml = (r) => `
@@ -825,14 +1001,22 @@ function renderShopping() {
       <span class="shop-main">
         <span class="shop-name">${escapeHtml(r.label)}</span>
         ${r.sub ? `<span class="shop-meal">${escapeHtml(r.sub)}</span>` : ""}
+        ${r.inCupboard && !done.has(r.key) ? `<span class="shop-meal shop-have">🗄️ You have: ${escapeHtml(r.inCupboard.product_name || r.inCupboard.ingredient_name)}${r.inCupboard.quantity > 1 ? " ×" + r.inCupboard.quantity : ""}${r.inCupboard.fullness ? " (" + escapeHtml(r.inCupboard.fullness) + ")" : ""}</span>` : ""}
       </span>
       ${r.qty ? `<span class="shop-qty">${escapeHtml(r.qty)}</span>` : ""}
       ${r.extra ? `<button class="icon-btn shop-del" data-del="${escapeHtml(r.label)}" aria-label="Remove ${escapeHtml(r.label)}">🗑</button>` : ""}
     </div>`;
 
   let html = "";
-  if (toGet.length) {
-    html += `<div class="shop-group"><div class="shop-group-head">To get</div>${toGet.map(rowHtml).join("")}</div>`;
+  AISLE_ORDER.forEach((aisle) => {
+    const inAisle = toGet.filter((r) => r.aisle === aisle).sort((a, b) => a.label.localeCompare(b.label));
+    if (!inAisle.length) return;
+    html += `<div class="shop-group"><div class="shop-group-head">${AISLE_ICON[aisle]} ${aisle}</div>${inAisle.map(rowHtml).join("")}</div>`;
+  });
+  if (maybeGot.length) {
+    html += `<div class="shop-group"><div class="shop-group-head have">🗄️ Check the cupboard first · ${maybeGot.length}</div>` +
+      `<p class="shop-group-note">Your cupboard says you've got these. Tap one if you've checked and you're sorted.</p>` +
+      `${maybeGot.map(rowHtml).join("")}</div>`;
   }
   if (got.length) {
     html += `<div class="shop-group"><div class="shop-group-head done">Got it · ${got.length}</div>${got.map(rowHtml).join("")}</div>`;
@@ -840,13 +1024,17 @@ function renderShopping() {
   box.innerHTML = html;
 }
 
-// Copy the still-to-get items to the clipboard as a plain text list.
+// Copy the still-to-get items to the clipboard as a plain text list, by aisle.
 async function copyShoppingList() {
-  const done = shopDoneSet();
-  const lines = shoppingRows()
-    .filter((r) => !done.has(r.key))
-    .map((r) => "• " + r.label + (r.qty ? " " + r.qty : ""));
-  if (!lines.length) { flash("Nothing left to get."); return; }
+  const rows = shoppingRows().filter((r) => !SHOP.done.has(r.key) && !r.inCupboard);
+  if (!rows.length) { flash("Nothing left to get."); return; }
+  const lines = [];
+  AISLE_ORDER.forEach((aisle) => {
+    const inAisle = rows.filter((r) => r.aisle === aisle).sort((a, b) => a.label.localeCompare(b.label));
+    if (!inAisle.length) return;
+    lines.push("", aisle.toUpperCase());
+    inAisle.forEach((r) => lines.push("• " + r.label + (r.qty ? " " + r.qty : "")));
+  });
   const text = `Shopping — ${weekTitle()}\n` + lines.join("\n");
   try {
     await navigator.clipboard.writeText(text);
@@ -952,6 +1140,7 @@ function renderSideChoices(mealName, chosen) {
   const hint = $("pick-hint");
   box.innerHTML = "";
   const meal = mealByName(mealName);
+  renderPickRating(meal);
   const always = alwaysSides(meal);
   const all = [...always, ...maybeSides(meal)];
   if (!meal || !all.length) { wrap.style.display = "none"; return; }
@@ -973,6 +1162,25 @@ function renderSideChoices(mealName, chosen) {
     label.appendChild(document.createTextNode(" " + (always.includes(s) ? "★ " : "") + s));
     box.appendChild(label);
   });
+}
+
+// Favourite / don't-suggest toggles for the meal chosen in the picker.
+function renderPickRating(meal) {
+  const box = $("pick-rating");
+  if (!box) return;
+  box.hidden = !meal || meal.location !== "Home";
+  if (box.hidden) return;
+  box.querySelectorAll("button[data-rating]").forEach((b) => {
+    b.classList.toggle("is-on", (meal.rating | 0) === parseInt(b.dataset.rating, 10));
+  });
+}
+async function setMealRating(meal, rating) {
+  const next = (meal.rating | 0) === rating ? 0 : rating; // tap again to undo
+  const { error } = await sb.from("meals").update({ rating: next }).eq("id", meal.id);
+  if (error) { flash("Couldn't save."); console.error(error); return; }
+  meal.rating = next;
+  renderPickRating(meal);
+  flash(next > 0 ? `❤️ ${meal.name} will come up more.` : next < 0 ? `👎 ${meal.name} won't be suggested.` : "Back to normal.");
 }
 
 async function savePicker() {
@@ -1056,6 +1264,7 @@ function openMealEditor(meal) {
   $("m-name").value = meal ? meal.name : "";
   $("m-location").value = meal ? meal.location : "Home";
   $("m-effort").value = String(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY);
+  $("m-rating").value = String(meal ? Math.sign(meal.rating | 0) : 0);
   renderMealSideCheckboxes(meal ? maybeSides(meal) : [], meal ? alwaysSides(meal) : []);
   $("m-min").value = meal ? meal.min_sides : 0;
   $("m-max").value = meal ? meal.max_sides : 0;
@@ -1080,6 +1289,7 @@ async function saveMeal() {
     category: "Dinner", // kept for the database column; lunch no longer exists
     location: $("m-location").value,
     difficulty: parseInt($("m-effort").value, 10) || DEFAULT_DIFFICULTY,
+    rating: parseInt($("m-rating").value, 10) || 0,
     sides: editorSides("maybe"),
     always_sides: editorSides("always"),
     min_sides: min,
@@ -1135,6 +1345,8 @@ function renderMealsList() {
       tags.push(`<span class="tag">Home</span>`);
       tags.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(m)))}</span>`);
     }
+    if ((m.rating | 0) > 0) tags.push(`<span class="tag">❤️ Favourite</span>`);
+    if ((m.rating | 0) < 0) tags.push(`<span class="tag">👎 Not suggested</span>`);
     const always = alwaysSides(m), maybe = maybeSides(m);
     if (always.length) tags.push(`<span class="tag">With ${escapeHtml(always.join(" & "))}</span>`);
     if (maybe.length) tags.push(`<span class="tag">${maybe.length} optional side${maybe.length === 1 ? "" : "s"}</span>`);
@@ -1500,6 +1712,10 @@ function cupItemHtml(it) {
       <label class="cup-lbl">Recipe name <span class="hint-inline">(matches your meals)</span></label>
       <input class="cup-ing select" data-field="ingredient_name" value="${escapeHtml(it.ingredient_name || "")}" placeholder="e.g. curry sauce" />
       <div class="cup-sub">${sub || `<span class="muted">${escapeHtml(it.barcode || "no barcode")}</span>`}${expTag}</div>
+      <div class="cup-quick">
+        <button class="btn btn-outline btn-sm" data-act="some">🥄 Used some</button>
+        <button class="btn btn-outline btn-sm" data-act="all">${(it.quantity || 1) > 1 ? "✅ Used one" : "✅ Used it up"}</button>
+      </div>
       <div class="cup-controls">
         <div class="cup-qty" aria-label="Quantity">
           <button data-act="dec" aria-label="One fewer">−</button>
@@ -1555,6 +1771,36 @@ async function cupOnListChange(e) {
     await updateCupboardItem(id, { [field]: el.value.trim() || null });
   }
 }
+// "Used some": step the fullness down one notch (Full → 3/4 → … → Nearly empty).
+const CUP_STEPS = ["Full", "3/4", "1/2", "1/4", "Nearly empty"];
+async function cupUseSome(it) {
+  const i = CUP_STEPS.indexOf(it.fullness || "Full");
+  if (i >= CUP_STEPS.length - 1) { flash("Nearly empty already — tap “Used it up” when it's gone."); return; }
+  const next = CUP_STEPS[i + 1];
+  await updateCupboardItem(it.id, cupFullnessPatch(next));
+  renderCupboard();
+  flash(`${it.product_name || "Item"}: ${next.toLowerCase()} left.`);
+}
+// "Used it up" / "−": one fewer; the last one removes the item (with undo).
+async function cupUseOne(it) {
+  if ((it.quantity || 1) > 1) {
+    await updateCupboardItem(it.id, { quantity: it.quantity - 1, ...cupFullnessPatch("") });
+    renderCupboard();
+    flash(`${it.product_name || "Item"}: ${it.quantity} left.`);
+    return;
+  }
+  const saved = { ...it };
+  await deleteCupboardItem(it.id);
+  renderCupboard();
+  flashUndo(`${it.product_name || "Item"} used up and removed.`, async () => {
+    const { data, error } = await sb.from("cupboard_items").insert(saved).select().single();
+    if (error) { flash("Couldn't put it back."); console.error(error); return; }
+    CUPBOARD.unshift(data);
+    renderCupboard();
+    flash("Put back.");
+  });
+}
+
 async function cupOnListClick(e) {
   const btn = e.target.closest("button[data-act]");
   if (!btn) return;
@@ -1564,7 +1810,8 @@ async function cupOnListClick(e) {
   if (!it) return;
   const act = btn.getAttribute("data-act");
   if (act === "inc") { await updateCupboardItem(id, { quantity: (it.quantity || 0) + 1 }); renderCupboard(); }
-  else if (act === "dec") { await updateCupboardItem(id, { quantity: Math.max(1, (it.quantity || 1) - 1) }); renderCupboard(); }
+  else if (act === "dec" || act === "all") await cupUseOne(it);
+  else if (act === "some") await cupUseSome(it);
   else if (act === "del") {
     if (!confirm("Remove this item from the cupboard?")) return;
     await deleteCupboardItem(id); renderCupboard();
@@ -1583,7 +1830,11 @@ function switchTab(name) {
   $("tab-cupboard").hidden = name !== "cupboard";
   if (name !== "cupboard") cupStopScan(); // never leave the camera running in the background
   window.scrollTo(0, 0);
-  if (name === "shopping") renderShopping();
+  if (name === "shopping") {
+    renderShopping();
+    loadShopItems().then((changed) => { if (changed) renderShopping(); });
+    startShopPolling();
+  } else stopShopPolling();
   if (name === "meals") renderMealsList();
   if (name === "sides") renderSidesList();
   if (name === "cupboard") renderCupboard();
@@ -1759,6 +2010,11 @@ function wireUp() {
     await saveEntry(picking.day, picking.slot, { status: "out", meal_name: null, sides: [], note: note.trim() });
     closePicker(); render();
   });
+  $("pick-rating").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-rating]");
+    const meal = b && mealByName($("pick-meal").value);
+    if (meal) setMealRating(meal, parseInt(b.dataset.rating, 10));
+  });
   $("pick-clear").addEventListener("click", async () => { if (picking) { await deleteEntry(picking.day, picking.slot); closePicker(); render(); } });
 
   // Meal editor
@@ -1779,9 +2035,25 @@ function wireUp() {
 function flash(msg) {
   const el = $("toast");
   el.textContent = msg;
+  el.classList.remove("has-action");
   el.classList.add("show");
   clearTimeout(flash._t);
   flash._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+// A toast with an Undo button, shown a little longer than a plain flash.
+function flashUndo(msg, undo) {
+  const el = $("toast");
+  el.textContent = msg + " ";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "toast-btn";
+  b.textContent = "Undo";
+  b.addEventListener("click", () => { el.classList.remove("show", "has-action"); undo(); }, { once: true });
+  el.appendChild(b);
+  el.classList.add("show", "has-action");
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => el.classList.remove("show", "has-action"), 6000);
 }
 
 /* ---------- start ---------- */
