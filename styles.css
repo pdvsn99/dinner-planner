@@ -237,7 +237,7 @@ input[type="date"].input { color-scheme: dark; }
 .week-label .link-btn { font-size: 11px; }
 
 /* ---------- week actions ---------- */
-.week-actions { display: flex; gap: 10px; justify-content: flex-end; margin-bottom: 24px; flex-wrap: wrap; }
+.week-actions { display: flex; gap: 16px; justify-content: flex-end; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
 
 /* ---------- planner layout ---------- */
 .planner-layout { display: flex; gap: 28px; align-items: flex-start; }
@@ -285,35 +285,13 @@ input[type="date"].input { color-scheme: dark; }
 .tag.treat { border-color: var(--treat-line-2); color: var(--accent); }
 .tag.expiring { border-color: #5a4424; color: var(--amber); }
 
-/* lock/roll pill */
-.lock-btn {
-  height: 34px; padding: 0 12px; flex-shrink: 0;
-  border-radius: var(--pill); border: 1px solid var(--line-2);
-  background: transparent; color: var(--text-2);
-  font-size: 13px; font-weight: 500; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
+/* ⇄ "something else" on each night */
+.swap-btn {
+  width: 46px; height: 46px; flex-shrink: 0; border-radius: var(--pill);
+  border: 1px solid var(--line-2); background: transparent; color: var(--text);
+  font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
-.lock-btn.locked { border-color: var(--treat-line-2); background: var(--accent-soft); color: var(--accent); }
-.lock-btn:hover { border-color: var(--text-2); }
-
-.pick-btn {
-  height: 40px; padding: 0 16px; flex-shrink: 0;
-  border-radius: var(--pill); border: 0; background: var(--text); color: var(--bg);
-  font-size: 14px; font-weight: 600; cursor: pointer;
-}
-.pick-btn:hover { background: #fff; }
-
-.day-actions {
-  display: flex; gap: 2px; flex-shrink: 0;
-  padding-left: 10px; border-left: 1px solid var(--line-2);
-}
-.day-act {
-  width: 40px; height: 40px; border-radius: var(--r-sm);
-  border: 0; background: transparent; color: var(--text-2);
-  font-size: 17px; cursor: pointer; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-}
-.day-act:hover { background: var(--surface-2); color: var(--text); }
+.swap-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .day-off-label { display: flex; flex-direction: column; gap: 4px; }
 .day-off-label .off-title { font-family: var(--display); font-size: 24px; color: var(--text-2); letter-spacing: .5px; }
@@ -375,6 +353,47 @@ input[type="date"].input { color-scheme: dark; }
   border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600;
 }
 .sides-wrap { margin-top: 16px; }
+.chip-set .side-item.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+
+/* ---------- meal editor ---------- */
+.seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.seg label {
+  display: inline-flex; align-items: center; height: 40px; padding: 0 14px; border-radius: var(--pill);
+  border: 1px solid var(--line-2); color: var(--text-2); font-size: 14px; cursor: pointer; user-select: none;
+}
+.seg label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.chip-edit {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 48px; padding: 6px 8px;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--bg-2); cursor: text;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 4px 0 12px;
+  border-radius: var(--pill); background: var(--surface-2); color: var(--text); font-size: 14px;
+}
+.chip-x { width: 24px; height: 24px; border: 0; border-radius: var(--pill); background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+.chip-x:hover { color: var(--text); background: var(--line-2); }
+.chip-input { flex: 1; min-width: 140px; height: 32px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 15px; outline: none; }
+.days-wrap { margin-top: 18px; }
+.days-wrap summary { cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-2); padding: 6px 0; }
+.days-wrap .chip-set { margin-top: 8px; }
+
+/* ---------- night sheet ---------- */
+.night-meal { font-family: var(--display); font-size: 32px; line-height: 1.05; letter-spacing: .5px; }
+.night-meal.dim { color: var(--muted); }
+.night-comes { margin-top: 8px; font-size: 15px; color: var(--text-2); }
+.night-comes:empty { display: none; }
+.night-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; }
+.night-act { width: 100%; justify-content: flex-start; padding: 0 16px; }
+#choose-view .field-label { margin-top: 12px; }
+.choose-list { display: flex; flex-direction: column; margin-top: 10px; max-height: 55vh; overflow-y: auto; }
+.choose-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 12px 6px; border: 0; border-bottom: 1px solid var(--line); background: transparent;
+  color: var(--text); font: inherit; font-size: 16px; cursor: pointer;
+}
+.choose-option:hover, .choose-option.is-current { color: var(--accent); }
+.choose-sub { font-size: 12.5px; color: var(--muted); }
 .pick-rating { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .pick-rating .field-label { margin: 0 4px 0 0; }
 .pick-rating .is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
@@ -538,10 +557,8 @@ input[type="date"].input { color-scheme: dark; }
   .week-nav { align-self: flex-start; }
   .week-actions { justify-content: stretch; }
   .week-actions .btn { flex: 1; padding: 0 12px; }
-  .week-actions #btn-clear { flex: 0 0 auto; }
 
   .day-row { gap: 12px; padding: 12px 10px 12px 14px; }
-  .day-actions { display: none; }
   .day-meal { font-size: 22px; }
 
   .meals-list { grid-template-columns: 1fr 1fr; }
@@ -569,3 +586,6 @@ input[type="date"].input { color-scheme: dark; }
   .shop-row { border-color: #ccc; }
   .shop-name, .shop-qty, .shop-meal, .shop-group-head { color: #000 !important; }
 }
+
+/* Night sheet: the day is a small label so the meal is the headline. */
+#modal-title { font-family: inherit; font-size: 13px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
