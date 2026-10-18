@@ -589,3 +589,6 @@ input[type="date"].input { color-scheme: dark; }
 
 /* Night sheet: the day is a small label so the meal is the headline. */
 #modal-title { font-family: inherit; font-size: 13px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+
+/* Cupboard: a product not yet linked to an item. */
+.cup-ing.needs-item { border-color: var(--amber); }
