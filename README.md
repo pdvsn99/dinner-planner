@@ -9,15 +9,13 @@ cloud (Supabase), so they're there on every device you log in on.
 
 | Thing | What it does |
 | --- | --- |
-| 🎲 **Roll nights** | Fills empty (or unlocked) dinners with *home* meals allowed on that day. Rolls are weighted: ❤️ favourites and meals that use up expiring cupboard food come up more; meals eaten in the last few weeks, 👎 "don't suggest" meals, the same main two nights running and hard cooks on Mon–Thu come up less (or never). |
-| 🔀 **Swap selected** | Tap a meal, then re-roll just that one. |
-| ✨ **Treat selected / Treat the week!** | Swap a meal (or the whole week) for takeaways / eating out. |
-| ✏️ **Edit selected / the pencil** | Choose an exact meal and tick the sides you want. |
-| **⋯ on a day** | Mark a whole day *out of the planner* (away on a trip, etc.) with a note. Tap **↩** to bring it back. |
-| 🚫 **Mark out** (in the meal picker) | Mark a single meal as out (e.g. dinner out on Friday) with a note. |
+| ✨ **Suggest week** | Fills the week with dinners, each with its usual sides. Suggestions favour ❤️ meals and anything that uses up food about to go off, and avoid what you've had lately, the same main two nights running, 👎 "don't suggest" meals and big cooks on Mon–Thu. It only refills nights you haven't touched. |
+| ⇄ **on a night** | Something else for that night. |
+| **Tap a night** | See what it comes with and tick any extras; ❤️ / 👎 the meal; choose a specific meal, a takeaway or eating out; or mark it *not cooking tonight*. |
+| **Start week again** | Clears the whole week, including your own picks and nights off. |
 | ‹ › **week arrows** | Move between real calendar weeks. Past and future weeks are all saved. |
 | 🛒 **Shopping list** | Builds itself from the week, counting every ingredient and side, grouped by aisle. Things your Cupboard says you already have go in a "check the cupboard first" section. Ticks and extras are shared, so you both see the same list. Ignores days/meals marked out. |
-| 🍲 **Meals tab** | Add, edit and delete your meals and rules. Each side is either ★ *always* (comes with the meal every time) or *maybe* (picked at random). Mark meals ❤️ favourite or 👎 don't suggest. |
+| 🍲 **Meals tab** | Add, edit and delete meals: where it's from, how long it takes (Quick / Normal / Big cook), what to buy, what it **comes with** every time, **optional extras**, and (if needed) which nights it's allowed on. |
 | 🥔 **Sides tab** | Your list of sides, each with what to buy for it (e.g. mash = potatoes, butter, milk). |
 | 🗄️ **Cupboard tab** | Scan food in; tap **Used some** or **Used it up** as you go (with undo). |
 

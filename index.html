@@ -76,9 +76,8 @@
       </div>
 
       <div class="week-actions">
-        <button id="btn-clear" class="btn btn-ghost">Clear unlocked</button>
-        <button id="btn-reroll" class="btn btn-outline">↻ Re-roll unlocked</button>
-        <button id="btn-roll-empty" class="btn btn-primary">🎲 Roll empty nights</button>
+        <button id="btn-suggest" class="btn btn-primary">✨ Suggest week</button>
+        <button id="btn-start-again" class="link-btn">Start week again</button>
       </div>
 
       <div class="planner-layout">
@@ -86,17 +85,17 @@
 
         <aside class="planner-aside">
           <div class="card note-card">
-            <div class="note-ico" aria-hidden="true">🔒</div>
+            <div class="note-ico" aria-hidden="true">✨</div>
             <div>
-              <div class="note-title">Your picks are safe</div>
-              <div class="note-body">Anything you choose yourself locks automatically. Rolling only fills empty or unlocked nights.</div>
+              <div class="note-title">How it works</div>
+              <div class="note-body"><strong>Suggest week</strong> fills the nights for you. Don't fancy one? Tap <strong>⇄</strong> for something else, or tap the night to choose. Anything you change stays put next time you press Suggest week.</div>
             </div>
           </div>
           <div class="card note-card">
-            <div class="note-ico" aria-hidden="true">🎲</div>
+            <div class="note-ico" aria-hidden="true">🧠</div>
             <div>
-              <div class="note-title">Rolls are smart</div>
-              <div class="note-body">The dice favour your ❤️ meals and anything that uses up food about to go off. They avoid meals you've had lately, the same main two nights running, and hard cooks on Mon–Thu.</div>
+              <div class="note-title">What it suggests</div>
+              <div class="note-body">More of your ❤️ meals and anything that uses up food about to go off. Less of what you've had lately, the same main two nights running, and big cooks on Mon–Thu.</div>
             </div>
           </div>
         </aside>
@@ -159,7 +158,7 @@
         <div class="page-head-text">
           <div class="eyebrow">Shared list</div>
           <h1 class="display page-title">Sides</h1>
-          <div class="page-sub">Rolled alongside meals that allow them. Add what to buy for each side so the shopping list knows (e.g. mash = potatoes, butter, milk).</div>
+          <div class="page-sub">Everything a meal can come with. Add what to buy for each one so the shopping list knows (e.g. mash = potatoes, butter, milk).</div>
         </div>
       </div>
       <form id="side-add-form" class="inline-add">
@@ -231,40 +230,37 @@
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="sheet-grip" aria-hidden="true"></div>
       <div class="modal-head">
-        <h2 id="modal-title" class="display">Choose a meal</h2>
+        <h2 id="modal-title" class="display">Monday</h2>
         <button id="modal-close" class="round-btn" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <div class="quick-row">
-          <button id="pick-random" class="quick-btn">🎲<span>Roll for me</span></button>
-          <button id="pick-treat" class="quick-btn is-treat">✨<span>Treat night</span></button>
-          <button id="pick-out" class="quick-btn">🚫<span>Night off</span></button>
+        <!-- what's on tonight -->
+        <div id="night-view">
+          <div id="night-meal" class="night-meal"></div>
+          <div id="night-comes" class="night-comes"></div>
+          <div id="night-extras-wrap" class="sides-wrap">
+            <div class="field-label">Add extras?</div>
+            <div id="night-extras" class="chip-set"></div>
+          </div>
+          <div id="night-rating" class="pick-rating">
+            <button type="button" class="btn btn-ghost btn-sm" data-rating="1">❤️ Love it</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-rating="-1">👎 Don't suggest</button>
+          </div>
+          <div class="night-actions">
+            <button id="night-swap" class="btn btn-outline night-act">⇄ Something else</button>
+            <button id="night-choose" class="btn btn-outline night-act">🔍 Choose a meal</button>
+            <button id="night-treat" class="btn btn-outline night-act">🍕 Takeaway / eating out</button>
+            <button id="night-off" class="btn btn-outline night-act">🚫 Not cooking tonight</button>
+          </div>
+          <p class="foot"><button id="night-clear" class="link-btn">Clear this night</button></p>
         </div>
-
-        <label class="field-label" for="pick-search">Search your meals</label>
-        <div id="pick-combo" class="combo">
-          <input type="hidden" id="pick-meal" />
-          <input id="pick-search" class="input" type="text"
-                 placeholder="Search meals…" autocomplete="off"
-                 role="combobox" aria-expanded="false" aria-controls="pick-list" />
-          <div id="pick-list" class="combo-list" role="listbox" hidden></div>
+        <!-- picking a specific meal -->
+        <div id="choose-view" hidden>
+          <button id="choose-back" class="link-btn">‹ Back</button>
+          <div id="choose-title" class="field-label">Choose a meal</div>
+          <input id="choose-search" class="input" type="text" placeholder="Search meals…" autocomplete="off" />
+          <div id="choose-list" class="choose-list"></div>
         </div>
-        <div id="pick-sides-wrap" class="sides-wrap">
-          <div class="field-label">Sides <span id="pick-hint" class="hint-inline"></span></div>
-          <div id="pick-sides" class="chip-set"></div>
-        </div>
-        <div id="pick-rating" class="pick-rating" hidden>
-          <span class="field-label">How was it?</span>
-          <button type="button" class="btn btn-ghost btn-sm" data-rating="1">❤️ Favourite</button>
-          <button type="button" class="btn btn-ghost btn-sm" data-rating="-1">👎 Don't suggest</button>
-        </div>
-        <div class="quick-row quick-row-sm">
-          <button id="pick-clear" class="btn btn-ghost btn-sm">🧹 Clear this night</button>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button id="pick-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="pick-save" class="btn btn-primary">Save pick</button>
       </div>
     </div>
   </div>
@@ -278,51 +274,48 @@
         <button id="meal-modal-close" class="round-btn" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <label class="field-label" for="m-name">What's it called?</label>
-        <input id="m-name" class="input" type="text" placeholder="e.g. Meatballs" />
+        <label class="field-label" for="m-name">Name</label>
+        <input id="m-name" class="input" type="text" placeholder="e.g. Bangers and mash" />
 
-        <label class="field-label" for="m-location">Where's it from?</label>
-        <select id="m-location" class="input">
-          <option value="Home">Home (cooked)</option>
-          <option value="Takeaway">Takeaway (treat)</option>
-          <option value="Eating Out">Eating Out (treat)</option>
-        </select>
-
-        <label class="field-label" for="m-rating">How do you feel about it?</label>
-        <select id="m-rating" class="input">
-          <option value="1">❤️ Favourite — suggest it more</option>
-          <option value="0">😐 It's fine</option>
-          <option value="-1">👎 Don't suggest it (still pickable)</option>
-        </select>
-
-        <label class="field-label" for="m-effort">How much effort?</label>
-        <select id="m-effort" class="input">
-          <option value="1">Very easy</option>
-          <option value="2">Easy</option>
-          <option value="3">Medium</option>
-          <option value="4">Hard</option>
-          <option value="5">Very hard</option>
-        </select>
-
-        <div class="field-label">Sides <span class="hint-inline">(tap once = maybe, twice = ★ always, three times = off)</span></div>
-        <div id="m-sides-box" class="chip-set"></div>
-
-        <div class="grid-2">
-          <div>
-            <label class="field-label" for="m-min">Fewest "maybe" sides</label>
-            <input id="m-min" class="input" type="number" min="0" value="0" />
-          </div>
-          <div>
-            <label class="field-label" for="m-max">Most "maybe" sides</label>
-            <input id="m-max" class="input" type="number" min="0" value="0" />
-          </div>
+        <div class="field-label">Where's it from?</div>
+        <div class="seg" id="m-loc">
+          <label><input type="radio" name="m-loc" value="Home" /> Home</label>
+          <label><input type="radio" name="m-loc" value="Takeaway" /> Takeaway</label>
+          <label><input type="radio" name="m-loc" value="Eating Out" /> Eating out</label>
         </div>
 
-        <div class="field-label">Which nights can it go on?</div>
-        <div id="m-days" class="chip-set"></div>
+        <div class="home-only">
+          <div class="field-label">How long does it take?</div>
+          <div class="seg" id="m-effort">
+            <label><input type="radio" name="m-effort" value="quick" /> Quick</label>
+            <label><input type="radio" name="m-effort" value="normal" /> Normal</label>
+            <label><input type="radio" name="m-effort" value="big" /> Big cook</label>
+          </div>
 
-        <label class="field-label" for="m-ingredients">Shopping items for the main <span class="hint-inline">(comma separated — sides add their own)</span></label>
-        <input id="m-ingredients" class="input" type="text" placeholder="meatballs, gravy" />
+          <div class="field-label">What to buy for it</div>
+          <div id="m-buy" class="chip-edit" data-placeholder="Add an item, e.g. sausages"></div>
+
+          <div class="field-label">Comes with <span class="hint-inline">(every time)</span></div>
+          <div id="m-always" class="chip-edit" data-placeholder="Add a side, e.g. mash" data-sides="1"></div>
+
+          <div class="field-label">Optional extras <span class="hint-inline">(tick them on the night if you want them)</span></div>
+          <div id="m-extras" class="chip-edit" data-placeholder="Add a side, e.g. peas" data-sides="1"></div>
+        </div>
+
+        <details id="m-days-wrap" class="days-wrap">
+          <summary>Only on certain nights? <span id="m-days-summary" class="hint-inline"></span></summary>
+          <div id="m-days" class="chip-set"></div>
+        </details>
+
+        <div class="home-only">
+          <div class="field-label">How do you feel about it?</div>
+          <div class="seg" id="m-rating">
+            <label><input type="radio" name="m-rating" value="1" /> ❤️ Love it</label>
+            <label><input type="radio" name="m-rating" value="0" /> Fine</label>
+            <label><input type="radio" name="m-rating" value="-1" /> 👎 Don't suggest</label>
+          </div>
+        </div>
+        <datalist id="side-names"></datalist>
       </div>
       <div class="modal-foot">
         <button id="meal-delete" class="btn btn-ghost danger" hidden>Delete</button>

@@ -39,17 +39,6 @@ const rand = (a) => a[Math.floor(Math.random() * a.length)];
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const ekey = (day, slot) => `${day}|${slot}`;
 
-function randInt(min, max) {
-  if (max < min) max = min;
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-function pickSides(pool, n) {
-  const copy = pool.slice();
-  const out = [];
-  n = Math.min(n, copy.length);
-  for (let i = 0; i < n; i++) out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
-  return out;
-}
 function mealByName(name) { return MEALS.find((m) => m.name === name); }
 // A meal's sides come in two kinds: "always" sides that come with it every
 // time (mash for bangers and mash), and "maybe" sides the planner picks a few
@@ -71,15 +60,8 @@ function sideShopping(name) {
 
 /* ---------- effort / difficulty ----------
  * Every meal has a difficulty of 1..5, stored as a number in the database
- * but shown to people as words. Old meals only had a text "ease" field
+ * but shown to people as Quick / Normal / Big cook. Old meals only had a text "ease" field
  * (Easy/Medium/Hard), so we fall back to that when no number is set.       */
-const EFFORT_LEVELS = [
-  { n: 1, label: "Very easy" },
-  { n: 2, label: "Easy" },
-  { n: 3, label: "Medium" },
-  { n: 4, label: "Hard" },
-  { n: 5, label: "Very hard" },
-];
 const EASE_TO_DIFFICULTY = { easy: 2, medium: 3, hard: 4 };
 const DEFAULT_DIFFICULTY = 3;
 
@@ -88,10 +70,6 @@ function mealDifficulty(m) {
   const d = parseInt(m.difficulty, 10);
   if (d >= 1 && d <= 5) return d;
   return EASE_TO_DIFFICULTY[(m.ease || "").toLowerCase()] || DEFAULT_DIFFICULTY;
-}
-function effortLabel(n) {
-  const lvl = EFFORT_LEVELS.find((l) => l.n === n);
-  return lvl ? lvl.label : "Medium";
 }
 
 /* The weekly effort budget is remembered on this device (no login needed). */
@@ -288,12 +266,13 @@ function candidates(slot, dayKey, { treat } = { treat: false }) {
     return (m.days || []).includes(dayKey);
   });
 }
+// A planned night for `meal`. It comes with its usual ("always") sides only;
+// extras are added by ticking them on the night.
 function makeEntry(meal, source) {
-  const n = randInt(meal.min_sides, meal.max_sides);
   return {
     status: "planned",
     meal_name: meal.name,
-    sides: [...alwaysSides(meal), ...pickSides(maybeSides(meal), n)],
+    sides: alwaysSides(meal),
     note: null,
     source: source || "manual",
     // Only home-cooked meals carry an effort cost; treats don't count.
@@ -519,27 +498,26 @@ async function clearWeekData() {
 
 /* ============================================================
  *  Planner actions
- * ============================================================ */
+ * ============================================================
+ * A night is either empty, a suggestion (source "auto"), something you chose
+ * or changed yourself (source "manual"), or a night off. "Suggest week" only
+ * ever refills empty nights and suggestions, so anything you touched stays. */
 
 function eligible(dayKey, slot) {
   // A slot can be filled only if it isn't out (day-level or slot-level).
   const st = cellState(dayKey, slot);
   return !st.out;
 }
-
-// A night's lock state, from the `source` recorded on its entry.
-//   manual → locked ("your pick"); auto → rolled. Empty / night-off → neither.
-function isLocked(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "manual"); }
-function isRolled(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "auto"); }
+function isChosen(e) { return !!(e && e.meal_name && e.status !== "out" && e.source === "manual"); }
 
 // Smart-fill the given nights, one at a time, so each pick knows about the
-// nights around it (including ones picked earlier in this same roll).
-function smartUpdates(dayKeys) {
+// nights around it (including ones picked earlier in this same go).
+function smartUpdates(dayKeys, source) {
   const chosen = {}, avoid = {};
   DAYS.forEach((d) => {
     const e = plan.entries[ekey(d.key, SLOTS[0])];
     if (!e || !e.meal_name || e.status === "out") return;
-    if (dayKeys.includes(d.key)) avoid[d.key] = e.meal_name; // re-rolling: try something else
+    if (dayKeys.includes(d.key)) avoid[d.key] = e.meal_name; // replacing it: try something else
     else chosen[d.key] = e.meal_name;
   });
   const ctx = planContext(chosen, avoid);
@@ -548,77 +526,48 @@ function smartUpdates(dayKeys) {
     const meal = smartPick(candidates(SLOTS[0], day, { treat: false }), day, ctx);
     if (!meal) return;
     chosen[day] = meal.name;
-    updates.push({ day, slot: SLOTS[0], entry: makeEntry(meal, "auto") });
+    updates.push({ day, slot: SLOTS[0], entry: makeEntry(meal, source || "auto") });
   });
   return updates;
 }
 
-// Roll only the empty nights (leave locked picks, rolled meals and nights off).
-async function rollEmptyNights() {
-  const days = DAYS.map((d) => d.key).filter((day) => {
-    if (!eligible(day, SLOTS[0])) return false;
-    const e = plan.entries[ekey(day, SLOTS[0])];
-    return !(e && e.meal_name && e.status !== "out"); // only nights with nothing yet
-  });
-  const updates = smartUpdates(days);
-  if (!updates.length) { flash("No empty nights to roll."); return; }
-  await saveEntries(updates);
-  render();
-}
-
-// Re-roll every night that isn't locked (empty nights and previously-rolled
-// ones), leaving your own picks and nights off untouched.
-async function reRollUnlocked() {
+// Fill every night that's empty or still a suggestion.
+async function suggestWeek() {
   const days = DAYS.map((d) => d.key)
-    .filter((day) => eligible(day, SLOTS[0]) && !isLocked(plan.entries[ekey(day, SLOTS[0])]));
-  const updates = smartUpdates(days);
-  if (!updates.length) { flash("Nothing to re-roll — lock or add a meal first."); return; }
+    .filter((day) => eligible(day, SLOTS[0]) && !isChosen(plan.entries[ekey(day, SLOTS[0])]));
+  if (!days.length) { flash("Every night is already chosen. Use ⇄ on a night to change it."); return; }
+  const updates = smartUpdates(days, "auto");
+  if (!updates.length) { flash("No meals to suggest — add some in the Meals tab."); return; }
   await saveEntries(updates);
   render();
 }
 
-// Clear only the rolled (unlocked) nights; keep your own picks and nights off.
-async function clearUnlocked() {
-  const days = DAYS.filter((d) => isRolled(plan.entries[ekey(d.key, SLOTS[0])])).map((d) => d.key);
-  if (!days.length) { flash("No rolled nights to clear."); return; }
-  for (const day of days) await deleteEntry(day, SLOTS[0]);
+// Wipe the whole week (meals and nights off) for a fresh start.
+async function startWeekAgain() {
+  if (!confirm("Start this week again?\n\nThis clears every night, including ones you chose and nights off.")) return;
+  await clearWeekData();
   render();
 }
 
-// Fill one night with a random matching meal. `lock` marks it as your pick.
-async function fillCell(dayKey, slot, { treat = false, lock = false } = {}) {
-  let pool = candidates(slot, dayKey, { treat });
-  if (treat && pool.length === 0) pool = MEALS.filter((m) => m.location !== "Home");
-  if (pool.length === 0) { flash("No matching meals — add some in the Meals tab."); return; }
-  const meal = treat ? rand(pool) : smartUpdates([dayKey]).map((u) => mealByName(u.entry.meal_name))[0];
-  if (!meal) { flash("No matching meals — add some in the Meals tab."); return; }
-  await saveEntry(dayKey, slot, makeEntry(meal, lock ? "manual" : "auto"));
+// "Something else" for one night. The new meal counts as your choice.
+async function swapNight(dayKey) {
+  const [u] = smartUpdates([dayKey], "manual");
+  if (!u) { flash("No other meals fit this night."); return; }
+  await saveEntry(dayKey, SLOTS[0], u.entry);
   render();
 }
 
-// Per-night buttons on the planner rows.
-async function rollNight(dayKey) { await fillCell(dayKey, SLOTS[0], { treat: false, lock: false }); }
-async function treatNight(dayKey) { await fillCell(dayKey, SLOTS[0], { treat: true, lock: true }); }
-
-// Flip a night between locked (your pick) and rolled, keeping the same meal.
-async function toggleLock(dayKey) {
-  const e = plan.entries[ekey(dayKey, SLOTS[0])];
-  if (!e || !e.meal_name || e.status === "out") return;
-  await saveEntry(dayKey, SLOTS[0], { ...e, source: e.source === "manual" ? "auto" : "manual" });
+// Put a specific meal on a night (from the meal list, or a takeaway).
+async function setNightMeal(dayKey, meal) {
+  if (plan.days[dayKey] && plan.days[dayKey].is_out) await setDayOut(dayKey, false);
+  await saveEntry(dayKey, SLOTS[0], makeEntry(meal, "manual"));
   render();
 }
 
 async function clearNight(dayKey) { await deleteEntry(dayKey, SLOTS[0]); render(); }
 
-async function toggleDayOut(dayKey) {
-  const current = plan.days[dayKey] && plan.days[dayKey].is_out;
-  if (current) {
-    await setDayOut(dayKey, false);
-  } else {
-    const note = prompt(`Mark ${DAYS.find((x) => x.key === dayKey).label} as OUT of the planner (away, eating out, etc.).\n\nAdd a short note (optional):`, "");
-    if (note === null) return; // cancelled
-    await setDayOut(dayKey, true, note.trim());
-  }
+async function setNotCooking(dayKey, isOut) {
+  await setDayOut(dayKey, isOut, null);
   render();
 }
 
@@ -656,40 +605,25 @@ function render() {
   renderShopping();
 }
 
-// Summary chips in the planner hero: how many nights are locked (your picks),
-// rolled (auto-filled), empty, or a night off.
+// Summary line in the planner hero, e.g. "5 dinners planned · 1 night off".
 function renderStats() {
   const box = $("week-stats");
   if (!box) return;
-  let locked = 0, rolled = 0, empty = 0, off = 0;
+  let planned = 0, empty = 0, off = 0;
   DAYS.forEach((d) => {
     const st = cellState(d.key, SLOTS[0]);
-    if (st.out) { off += 1; return; }
-    const e = st.entry;
-    if (!e || !e.meal_name) { empty += 1; return; }
-    if (e.source === "manual") locked += 1; else rolled += 1;
+    if (st.out) off += 1;
+    else if (st.entry && st.entry.meal_name) planned += 1;
+    else empty += 1;
   });
   const chips = [];
-  if (locked) chips.push(`<span class="stat-chip locked">🔒 ${locked} locked</span>`);
-  if (rolled) chips.push(`<span class="stat-chip">🎲 ${rolled} rolled</span>`);
-  if (empty)  chips.push(`<span class="stat-chip">${empty} empty</span>`);
-  if (off)    chips.push(`<span class="stat-chip">${off} night${off === 1 ? "" : "s"} off</span>`);
+  if (planned) chips.push(`<span class="stat-chip">${planned} dinner${planned === 1 ? "" : "s"} planned</span>`);
+  if (empty)   chips.push(`<span class="stat-chip">${empty} to plan</span>`);
+  if (off)     chips.push(`<span class="stat-chip">${off} night${off === 1 ? "" : "s"} off</span>`);
   box.innerHTML = chips.join("");
 }
 
 function renderWeekNav() { $("week-title").textContent = weekTitle(); }
-
-// A small inline-SVG-free action button for a planner row.
-function dayActionBtn(icon, label, onClick) {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "day-act";
-  b.textContent = icon;
-  b.title = label;
-  b.setAttribute("aria-label", label);
-  b.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(); });
-  return b;
-}
 
 function renderGrid() {
   const list = $("grid-body");
@@ -699,110 +633,51 @@ function renderGrid() {
 
   DAYS.forEach((d) => {
     const dateObj = dateForDay(d.key);
-    const dayOut = plan.days[d.key] && plan.days[d.key].is_out;
+    const st = cellState(d.key, slot);
+    const entry = st.out ? null : st.entry;
+    const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
 
     const row = document.createElement("div");
     row.className = "day-row";
     if (isoDate(dateObj) === todayIso) row.classList.add("is-today");
-
-    // left marker: short day name + date
-    const date = document.createElement("div");
-    date.className = "day-date";
-    date.innerHTML =
-      `<span class="d-name">${d.label.slice(0, 3).toUpperCase()}</span>` +
-      `<span class="d-num">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>`;
-    row.appendChild(date);
-
-    const st = cellState(d.key, slot);
-
-    // ---- whole day marked out of the planner ----
-    if (dayOut) {
-      row.classList.add("is-off");
-      const note = plan.days[d.key].note;
-      const main = document.createElement("div");
-      main.className = "day-main day-off-label";
-      main.innerHTML =
-        `<span class="off-title">Night off</span>` +
-        `<span class="off-note">${note ? escapeHtml(note) : "Skipped by rolls and left off the shopping list."}</span>`;
-      row.appendChild(main);
-      const back = dayActionBtn("↩", "Bring this day back into the planner", () => toggleDayOut(d.key));
-      row.appendChild(back);
-      row.addEventListener("click", () => toggleDayOut(d.key));
-      list.appendChild(row);
-      return;
-    }
-
-    const entry = st.entry;
-    const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
-    const isTreat = meal && meal.location !== "Home";
-    const outCell = st.out; // slot-level "eating out" marker
+    row.innerHTML =
+      `<div class="day-date"><span class="d-name">${d.label.slice(0, 3).toUpperCase()}</span>` +
+      `<span class="d-num">${dateObj.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span></div>`;
 
     const main = document.createElement("div");
     main.className = "day-main";
-
-    if (outCell) {
+    if (st.out) {
       row.classList.add("is-off");
-      main.classList.add("day-off-label");
-      main.innerHTML =
-        `<span class="off-title">Night off</span>` +
-        `<span class="off-note">${st.note ? escapeHtml(st.note) : "Eating out — left off the shopping list."}</span>`;
+      main.innerHTML = `<div class="day-meal dim">Not cooking</div>` +
+        (st.note ? `<div class="day-hint">${escapeHtml(st.note)}</div>` : "");
     } else if (entry && entry.meal_name) {
+      const isTreat = meal && meal.location !== "Home";
       if (isTreat) row.classList.add("is-treat");
-      const title = document.createElement("div");
-      title.className = "day-meal";
-      title.textContent = entry.meal_name;
-      main.appendChild(title);
-
-      const tags = document.createElement("div");
-      tags.className = "day-tags";
-      if (isTreat) {
-        tags.innerHTML = `<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`;
-      } else {
-        const bits = [`<span class="tag">Home</span>`];
-        if (meal && (meal.rating | 0) > 0) bits.push(`<span class="tag">❤️ Favourite</span>`);
-        if (entry.sides && entry.sides.length) bits.push(`<span class="tag">With ${escapeHtml(entry.sides.join(", "))}</span>`);
-        if (meal && mealUsesExpiringStock(meal)) bits.push(`<span class="tag expiring">🕒 use soon</span>`);
-        tags.innerHTML = bits.join("");
-      }
-      main.appendChild(tags);
+      const tags = [];
+      if (isTreat) tags.push(`<span class="tag treat">✨ ${meal.location === "Takeaway" ? "Takeaway" : "Eating out"}</span>`);
+      if (meal && (meal.rating | 0) > 0) tags.push(`<span class="tag">❤️</span>`);
+      if (meal && !isTreat && mealUsesExpiringStock(meal)) tags.push(`<span class="tag expiring">🕒 uses up food</span>`);
+      main.innerHTML = `<div class="day-meal">${escapeHtml(entry.meal_name)}</div>` +
+        (tags.length ? `<div class="day-tags">${tags.join("")}</div>` : "");
     } else {
       row.classList.add("is-empty");
-      main.innerHTML =
-        `<div class="day-meal dim">Nothing planned</div>` +
-        `<div class="day-hint">Pick something, or let the dice decide.</div>`;
+      main.innerHTML = `<div class="day-meal dim">Nothing yet</div>`;
     }
     row.appendChild(main);
 
-    // ---- lock pill / pick button ----
-    if (entry && entry.meal_name && !outCell) {
-      const lock = document.createElement("button");
-      lock.type = "button";
-      lock.className = "lock-btn" + (isLocked(entry) ? " locked" : "");
-      lock.textContent = isLocked(entry) ? "🔒 Your pick" : "🎲 Rolled · keep";
-      lock.title = isLocked(entry) ? "Locked — unlock to let rolls change it" : "Rolled — lock it as your pick";
-      lock.addEventListener("click", (ev) => { ev.stopPropagation(); toggleLock(d.key); });
-      row.appendChild(lock);
-    } else if (!outCell) {
-      const pick = document.createElement("button");
-      pick.type = "button";
-      pick.className = "pick-btn";
-      pick.textContent = "Pick a meal";
-      pick.addEventListener("click", (ev) => { ev.stopPropagation(); openPicker(d.key, slot); });
-      row.appendChild(pick);
+    // ⇄ on planned/empty nights: give me something else (or a first idea).
+    if (!st.out) {
+      const swap = document.createElement("button");
+      swap.type = "button";
+      swap.className = "swap-btn";
+      swap.textContent = "⇄";
+      swap.title = entry && entry.meal_name ? "Something else" : "Suggest something";
+      swap.setAttribute("aria-label", `${swap.title} for ${d.label}`);
+      swap.addEventListener("click", (ev) => { ev.stopPropagation(); swapNight(d.key); });
+      row.appendChild(swap);
     }
 
-    // ---- action cluster (desktop) ----
-    const actions = document.createElement("div");
-    actions.className = "day-actions";
-    actions.appendChild(dayActionBtn("🎲", `Roll ${d.label}`, () => rollNight(d.key)));
-    actions.appendChild(dayActionBtn("✨", `Make ${d.label} a treat`, () => treatNight(d.key)));
-    actions.appendChild(dayActionBtn("🚫", `Mark ${d.label} as a night off`, () => toggleDayOut(d.key)));
-    if (entry && entry.meal_name)
-      actions.appendChild(dayActionBtn("✕", `Clear ${d.label}`, () => clearNight(d.key)));
-    row.appendChild(actions);
-
-    // Tap the row to open the plan-a-night sheet.
-    row.addEventListener("click", () => openPicker(d.key, slot));
+    row.addEventListener("click", () => openNight(d.key));
     list.appendChild(row);
   });
 }
@@ -1050,151 +925,131 @@ function escapeHtml(s) {
 /* ============================================================
  *  Meal picker
  * ============================================================ */
-let picking = null;
+let nightDay = null;       // the night the sheet is open for
+let chooseMode = "all";    // "all" meals, or only "treat"s
 const byName = (a, b) => a.name.localeCompare(b.name);
 
-// Build the grouped list of meals shown in the searchable dropdown,
-// optionally filtered by what the person has typed.
-function comboGroups(query) {
-  const q = (query || "").trim().toLowerCase();
-  const match = (m) => !q || m.name.toLowerCase().includes(q);
-  return [
-    { label: "Home meals", items: MEALS.filter((m) => m.location === "Home" && match(m)).sort(byName) },
-    { label: "Treats (takeaway / eating out)", items: MEALS.filter((m) => m.location !== "Home" && match(m)).sort(byName) },
-  ].filter((g) => g.items.length);
-}
-
-// (Re)draw the dropdown panel. `query` filters; nothing shown = "no matches".
-function renderComboList(query) {
-  const list = $("pick-list");
-  const current = $("pick-meal").value;
-  list.innerHTML = "";
-  const groups = comboGroups(query);
-  if (!groups.length) {
-    const empty = document.createElement("div");
-    empty.className = "combo-empty";
-    empty.textContent = "No meals match";
-    list.appendChild(empty);
-    return;
-  }
-  groups.forEach((g) => {
-    const head = document.createElement("div");
-    head.className = "combo-group";
-    head.textContent = g.label;
-    list.appendChild(head);
-    g.items.forEach((m) => {
-      const opt = document.createElement("div");
-      opt.className = "combo-option" + (m.name === current ? " is-current" : "");
-      opt.setAttribute("role", "option");
-      opt.textContent = m.name;
-      opt.addEventListener("mousedown", (ev) => {
-        // mousedown (not click) so it fires before the input's blur closes the list
-        ev.preventDefault();
-        chooseComboMeal(m.name);
-      });
-      list.appendChild(opt);
-    });
-  });
-}
-
-function openComboList() {
-  renderComboList($("pick-search").value === $("pick-meal").dataset.label ? "" : $("pick-search").value);
-  $("pick-list").hidden = false;
-  $("pick-search").setAttribute("aria-expanded", "true");
-}
-function closeComboList() {
-  $("pick-list").hidden = true;
-  $("pick-search").setAttribute("aria-expanded", "false");
-}
-
-// Commit a chosen meal: store its name, show it in the box, refresh sides.
-function chooseComboMeal(name) {
-  const hidden = $("pick-meal");
-  hidden.value = name;
-  hidden.dataset.label = name;
-  $("pick-search").value = name;
-  closeComboList();
-  renderSideChoices(name, alwaysSides(mealByName(name)));
-}
-
-function openPicker(dayKey, slot) {
-  picking = { day: dayKey, slot };
-  const dayLabel = DAYS.find((x) => x.key === dayKey).label;
-  $("modal-title").textContent = `${dayLabel} dinner`;
-  const cur = plan.entries[ekey(dayKey, slot)];
-  const curName = cur && cur.status !== "out" ? cur.meal_name : "";
-  const hidden = $("pick-meal");
-  hidden.value = curName || "";
-  hidden.dataset.label = curName || "";
-  $("pick-search").value = curName || "";
-  closeComboList();
-  renderSideChoices(curName || "", cur ? cur.sides : []);
+function openNight(dayKey) {
+  nightDay = dayKey;
+  showNightView();
   $("modal").hidden = false;
 }
-function closePicker() { $("modal").hidden = true; closeComboList(); picking = null; }
+function closeNight() { $("modal").hidden = true; nightDay = null; }
 
-function renderSideChoices(mealName, chosen) {
-  const wrap = $("pick-sides-wrap");
-  const box = $("pick-sides");
-  const hint = $("pick-hint");
-  box.innerHTML = "";
-  const meal = mealByName(mealName);
-  renderPickRating(meal);
+function showNightView() {
+  $("choose-view").hidden = true;
+  $("night-view").hidden = false;
+  renderNight();
+}
+
+// The night sheet: what's on, what it comes with, extras to tick, and actions.
+function renderNight() {
+  if (!nightDay) return;
+  const d = DAYS.find((x) => x.key === nightDay);
+  $("modal-title").textContent = `${d.label} ${dateForDay(nightDay).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+  const st = cellState(nightDay, SLOTS[0]);
+  const entry = st.out ? null : st.entry;
+  const meal = entry && entry.meal_name ? mealByName(entry.meal_name) : null;
+  const isHome = !!meal && meal.location === "Home";
+
+  $("night-meal").textContent = st.out ? "Not cooking tonight" : (entry && entry.meal_name) || "Nothing planned yet";
+  $("night-meal").classList.toggle("dim", st.out || !(entry && entry.meal_name));
+
   const always = alwaysSides(meal);
-  const all = [...always, ...maybeSides(meal)];
-  if (!meal || !all.length) { wrap.style.display = "none"; return; }
-  wrap.style.display = "";
-  const extra = meal.min_sides === meal.max_sides
-    ? (meal.max_sides === 0 ? "" : `usually ${meal.max_sides} extra`)
-    : `usually ${meal.min_sides}–${meal.max_sides} extra`;
-  hint.textContent = [always.length ? "★ always comes with it" : "", extra].filter(Boolean).join(" · ");
-  hint.textContent = hint.textContent ? `(${hint.textContent})` : "";
-  const set = new Set(chosen || []);
-  all.forEach((s) => {
-    const label = document.createElement("label");
-    label.className = "side-item";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = s;
-    if (set.has(s)) cb.checked = true;
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(" " + (always.includes(s) ? "★ " : "") + s));
-    box.appendChild(label);
+  $("night-comes").innerHTML = always.length && entry
+    ? `Comes with <strong>${always.map(escapeHtml).join(" · ")}</strong>` : "";
+
+  // Extras: tick to add, tick again to take off. Saved straight away.
+  const extras = maybeSides(meal);
+  $("night-extras-wrap").hidden = !entry || !extras.length;
+  const box = $("night-extras");
+  box.innerHTML = "";
+  const have = new Set((entry && entry.sides) || []);
+  extras.forEach((name) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "side-item" + (have.has(name) ? " is-on" : "");
+    chip.textContent = (have.has(name) ? "✓ " : "+ ") + name;
+    chip.addEventListener("click", () => toggleExtra(name));
+    box.appendChild(chip);
   });
+
+  $("night-rating").hidden = !isHome;
+  if (isHome) {
+    $("night-rating").querySelectorAll("button[data-rating]").forEach((b) => {
+      b.classList.toggle("is-on", (meal.rating | 0) === parseInt(b.dataset.rating, 10));
+    });
+  }
+
+  $("night-swap").textContent = entry && entry.meal_name ? "⇄ Something else" : "⇄ Suggest something";
+  $("night-swap").hidden = st.out;
+  $("night-off").textContent = st.out ? "↩ Cooking after all" : "🚫 Not cooking tonight";
+  $("night-clear").hidden = !(entry && entry.meal_name);
 }
 
-// Favourite / don't-suggest toggles for the meal chosen in the picker.
-function renderPickRating(meal) {
-  const box = $("pick-rating");
-  if (!box) return;
-  box.hidden = !meal || meal.location !== "Home";
-  if (box.hidden) return;
-  box.querySelectorAll("button[data-rating]").forEach((b) => {
-    b.classList.toggle("is-on", (meal.rating | 0) === parseInt(b.dataset.rating, 10));
-  });
+async function toggleExtra(name) {
+  const e = plan.entries[ekey(nightDay, SLOTS[0])];
+  if (!e) return;
+  const sides = (e.sides || []).includes(name) ? e.sides.filter((x) => x !== name) : [...(e.sides || []), name];
+  await saveEntry(nightDay, SLOTS[0], { ...e, sides, source: "manual" });
+  renderNight();
+  render();
 }
+
 async function setMealRating(meal, rating) {
   const next = (meal.rating | 0) === rating ? 0 : rating; // tap again to undo
   const { error } = await sb.from("meals").update({ rating: next }).eq("id", meal.id);
   if (error) { flash("Couldn't save."); console.error(error); return; }
   meal.rating = next;
-  renderPickRating(meal);
+  renderNight();
+  render();
   flash(next > 0 ? `❤️ ${meal.name} will come up more.` : next < 0 ? `👎 ${meal.name} won't be suggested.` : "Back to normal.");
 }
 
-async function savePicker() {
-  if (!picking) return;
-  const name = $("pick-meal").value;
-  if (!name) { flash("Pick a meal, or use one of the buttons."); return; }
-  const chosen = [...document.querySelectorAll("#pick-sides input:checked")].map((c) => c.value);
-  const meal = mealByName(name);
-  await saveEntry(picking.day, picking.slot, {
-    status: "planned", meal_name: name, sides: chosen, note: null,
-    source: "manual",
-    difficulty: meal && meal.location === "Home" ? mealDifficulty(meal) : null,
+/* ---------- choosing a meal for the night ---------- */
+function openChooser(mode) {
+  chooseMode = mode;
+  $("night-view").hidden = true;
+  $("choose-view").hidden = false;
+  $("choose-title").textContent = mode === "treat" ? "Takeaway or eating out" : "Choose a meal";
+  $("choose-search").value = "";
+  renderChooseList("");
+  if (mode !== "treat") $("choose-search").focus();
+}
+function chooseGroups(query) {
+  const q = (query || "").trim().toLowerCase();
+  const match = (m) => !q || m.name.toLowerCase().includes(q);
+  const home = { label: "Home cooked", items: MEALS.filter((m) => m.location === "Home" && match(m)).sort(byName) };
+  const treats = { label: "Takeaway & eating out", items: MEALS.filter((m) => m.location !== "Home" && match(m)).sort(byName) };
+  return (chooseMode === "treat" ? [treats] : [home, treats]).filter((g) => g.items.length);
+}
+function renderChooseList(query) {
+  const list = $("choose-list");
+  list.innerHTML = "";
+  const groups = chooseGroups(query);
+  if (!groups.length) { list.innerHTML = '<p class="muted empty-note">No meals match.</p>'; return; }
+  const current = (plan.entries[ekey(nightDay, SLOTS[0])] || {}).meal_name;
+  groups.forEach((g) => {
+    if (chooseMode !== "treat") {
+      const head = document.createElement("div");
+      head.className = "combo-group";
+      head.textContent = g.label;
+      list.appendChild(head);
+    }
+    g.items.forEach((m) => {
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = "choose-option" + (m.name === current ? " is-current" : "");
+      const with_ = alwaysSides(m);
+      opt.innerHTML = `<span>${escapeHtml(m.name)}</span>` +
+        (with_.length ? `<span class="choose-sub">with ${escapeHtml(with_.join(" & "))}</span>` : "");
+      opt.addEventListener("click", async () => {
+        await setNightMeal(nightDay, m);
+        showNightView();
+      });
+      list.appendChild(opt);
+    });
   });
-  closePicker();
-  render();
 }
 
 /* ============================================================
@@ -1211,67 +1066,100 @@ function renderDayCheckboxes(selectedDays) {
     cb.type = "checkbox";
     cb.value = d.key;
     if (set.has(d.key)) cb.checked = true;
+    cb.addEventListener("change", renderDaysSummary);
     label.appendChild(cb);
     label.appendChild(document.createTextNode(" " + d.label.slice(0, 3)));
     box.appendChild(label);
   });
+  renderDaysSummary();
+}
+function editorDays() { return [...document.querySelectorAll("#m-days input:checked")].map((c) => c.value); }
+function renderDaysSummary() {
+  const days = editorDays();
+  $("m-days-summary").textContent = days.length === DAYS.length ? "(every night)"
+    : days.length ? "(" + DAYS.filter((d) => days.includes(d.key)).map((d) => d.label.slice(0, 3)).join(", ") + ")"
+    : "(no nights — it won't be suggested)";
 }
 
-// One chip per library side; tapping cycles it off → maybe → always. Any side
-// already on the meal but missing from the library is still shown (and kept)
-// so editing an older meal never silently drops its sides.
-const SIDE_STATES = ["off", "maybe", "always"];
-function renderMealSideCheckboxes(maybe, always) {
-  const box = $("m-sides-box");
-  if (!box) return;
+/* ---------- chip editor ----------
+ * A list you build by typing: each item is a chip with ✕; type and press
+ * Enter (or a comma) to add. Used for what to buy, and for sides.          */
+function chipEditor(boxId, values) {
+  const box = $(boxId);
   box.innerHTML = "";
-  const alwaysSet = new Set(always || []);
-  const maybeSet = new Set(maybe || []);
-  const names = SIDE_OPTIONS.map((s) => s.name);
-  [...(always || []), ...(maybe || [])].forEach((c) => {
-    if (!names.some((n) => n.toLowerCase() === c.toLowerCase())) names.push(c);
+  const input = document.createElement("input");
+  input.className = "chip-input";
+  input.type = "text";
+  input.placeholder = box.dataset.placeholder || "Add…";
+  if (box.dataset.sides) input.setAttribute("list", "side-names");
+  const addChip = (text) => {
+    const v = (text || "").trim();
+    if (!v || chipValues(boxId).some((x) => x.toLowerCase() === v.toLowerCase())) return;
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.dataset.value = v;
+    chip.textContent = v;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "chip-x";
+    x.setAttribute("aria-label", `Remove ${v}`);
+    x.textContent = "✕";
+    x.addEventListener("click", () => chip.remove());
+    chip.appendChild(x);
+    box.insertBefore(chip, input);
+  };
+  const commit = () => { const typed = input.value; input.value = ""; typed.split(",").forEach(addChip); };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commit(); }
+    else if (e.key === "Backspace" && !input.value) { const last = box.querySelectorAll(".chip"); if (last.length) last[last.length - 1].remove(); }
   });
-  if (!names.length) {
-    box.innerHTML = '<p class="muted empty-note">No sides yet — add some on the Sides tab.</p>';
-    return;
-  }
-  names.sort((a, b) => a.localeCompare(b)).forEach((name) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "side-item side-state";
-    chip.value = name;
-    const paint = () => {
-      chip.dataset.state = chip.dataset.state || "off";
-      chip.textContent = (chip.dataset.state === "always" ? "★ " : "") + name;
-    };
-    chip.dataset.state = alwaysSet.has(name) ? "always" : maybeSet.has(name) ? "maybe" : "off";
-    paint();
-    chip.addEventListener("click", () => {
-      chip.dataset.state = SIDE_STATES[(SIDE_STATES.indexOf(chip.dataset.state) + 1) % SIDE_STATES.length];
-      paint();
-    });
-    box.appendChild(chip);
-  });
+  input.addEventListener("change", commit); // picking from the suggestions list
+  input.addEventListener("blur", commit);
+  box.appendChild(input);
+  (values || []).forEach(addChip);
+  box.addEventListener("click", (e) => { if (e.target === box) input.focus(); });
 }
-function editorSides(state) {
-  return [...document.querySelectorAll(`#m-sides-box .side-state[data-state="${state}"]`)].map((c) => c.value);
+function chipValues(boxId) {
+  const box = $(boxId);
+  const typed = box.querySelector(".chip-input");
+  const vals = [...box.querySelectorAll(".chip")].map((c) => c.dataset.value);
+  // Anything typed but not yet turned into a chip still counts.
+  if (typed && typed.value.trim()) typed.value.split(",").map((t) => t.trim()).filter(Boolean).forEach((t) => vals.push(t));
+  return vals;
 }
 
+// "How long" is three choices; stored as the 1–5 effort number underneath.
+const EFFORT_BUCKETS = { quick: 2, normal: 3, big: 4 };
+function effortBucket(n) { return n <= 2 ? "quick" : n === 3 ? "normal" : "big"; }
+function setRadio(name, value) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((r) => { r.checked = r.value === String(value); });
+}
+function getRadio(name) { const r = document.querySelector(`input[name="${name}"]:checked`); return r ? r.value : null; }
+function syncHomeOnly() {
+  const home = getRadio("m-loc") === "Home";
+  document.querySelectorAll("#meal-modal .home-only").forEach((el) => { el.hidden = !home; });
+}
+
+let editingMealDifficulty = null;
 function openMealEditor(meal) {
   editingMealId = meal ? meal.id : null;
+  editingMealDifficulty = meal ? mealDifficulty(meal) : null;
   $("meal-modal-title").textContent = meal ? "Edit meal" : "Add meal";
   $("m-name").value = meal ? meal.name : "";
-  $("m-location").value = meal ? meal.location : "Home";
-  $("m-effort").value = String(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY);
-  $("m-rating").value = String(meal ? Math.sign(meal.rating | 0) : 0);
-  renderMealSideCheckboxes(meal ? maybeSides(meal) : [], meal ? alwaysSides(meal) : []);
-  $("m-min").value = meal ? meal.min_sides : 0;
-  $("m-max").value = meal ? meal.max_sides : 0;
-  $("m-ingredients").value = meal ? (meal.ingredients || []).join(", ") : "";
-  renderDayCheckboxes(meal ? meal.days : DAYS.map((d) => d.key));
+  setRadio("m-loc", meal ? meal.location : "Home");
+  setRadio("m-effort", effortBucket(meal ? mealDifficulty(meal) : DEFAULT_DIFFICULTY));
+  setRadio("m-rating", meal ? Math.sign(meal.rating | 0) : 0);
+  $("side-names").innerHTML = SIDE_OPTIONS.map((x) => `<option value="${escapeHtml(x.name)}"></option>`).join("");
+  chipEditor("m-buy", meal ? meal.ingredients : []);
+  chipEditor("m-always", alwaysSides(meal));
+  chipEditor("m-extras", maybeSides(meal));
+  const days = meal ? meal.days : DAYS.map((d) => d.key);
+  renderDayCheckboxes(days);
+  $("m-days-wrap").open = (days || []).length !== DAYS.length;
+  syncHomeOnly();
   $("meal-delete").hidden = !meal;
   $("meal-modal").hidden = false;
-  $("m-name").focus();
+  if (!meal) $("m-name").focus();
 }
 function closeMealEditor() { $("meal-modal").hidden = true; editingMealId = null; }
 
@@ -1280,21 +1168,25 @@ function splitList(v) { return (v || "").split(",").map((s) => s.trim()).filter(
 async function saveMeal() {
   const name = $("m-name").value.trim();
   if (!name) { flash("Give the meal a name."); return; }
-  const min = Math.max(0, parseInt($("m-min").value, 10) || 0);
-  let max = Math.max(0, parseInt($("m-max").value, 10) || 0);
-  if (max < min) max = min;
+  const location = getRadio("m-loc") || "Home";
+  const bucket = getRadio("m-effort") || "normal";
+  // Keep the exact old number if the bucket didn't change (e.g. a 1 stays a 1).
+  const difficulty = editingMealDifficulty && effortBucket(editingMealDifficulty) === bucket
+    ? editingMealDifficulty : EFFORT_BUCKETS[bucket];
+  const always = location === "Home" ? chipValues("m-always") : [];
+  const extras = location === "Home" ? chipValues("m-extras").filter((x) => !always.includes(x)) : [];
   const row = {
     name,
     category: "Dinner", // kept for the database column; lunch no longer exists
-    location: $("m-location").value,
-    difficulty: parseInt($("m-effort").value, 10) || DEFAULT_DIFFICULTY,
-    rating: parseInt($("m-rating").value, 10) || 0,
-    sides: editorSides("maybe"),
-    always_sides: editorSides("always"),
-    min_sides: min,
-    max_sides: max,
-    days: [...document.querySelectorAll("#m-days input:checked")].map((c) => c.value),
-    ingredients: splitList($("m-ingredients").value),
+    location,
+    difficulty,
+    rating: location === "Home" ? (parseInt(getRadio("m-rating"), 10) || 0) : 0,
+    always_sides: always,
+    sides: extras,
+    min_sides: 0,
+    max_sides: 0,
+    days: editorDays(),
+    ingredients: location === "Home" ? chipValues("m-buy") : [],
   };
   let error;
   if (editingMealId) {
@@ -1302,11 +1194,19 @@ async function saveMeal() {
   } else {
     ({ error } = await sb.from("meals").insert({ ...row, user_id: USER_ID, household_id: HOUSEHOLD_ID }));
   }
-  if (error) { flash("Couldn't save meal."); console.error(error); return; }
+  if (error) { flash(error.code === "23505" ? "There's already a meal with that name." : "Couldn't save meal."); console.error(error); return; }
+  // Any side typed here that isn't in the Sides list yet gets added to it.
+  const newSides = [...always, ...extras].filter((x) => !sideByName(x));
+  if (newSides.length) {
+    const { error: se } = await sb.from("side_options").insert(newSides.map((n) => ({ household_id: HOUSEHOLD_ID, user_id: USER_ID, name: n })));
+    if (se) console.error(se);
+    await loadSideOptions();
+  }
   closeMealEditor();
   await loadMeals();
   renderMealsList();
-  flash("Meal saved.");
+  render();
+  flash(newSides.length ? `Meal saved. Add what to buy for ${newSides.join(", ")} on the Sides tab.` : "Meal saved.");
 }
 
 async function deleteMeal() {
@@ -1342,13 +1242,13 @@ function renderMealsList() {
     if (treat) tags.push(`<span class="tag treat">✨ ${escapeHtml(m.location)}</span>`);
     else {
       tags.push(`<span class="tag">Home</span>`);
-      tags.push(`<span class="tag">${escapeHtml(effortLabel(mealDifficulty(m)))}</span>`);
+      tags.push(`<span class="tag">${({ quick: "Quick", normal: "Normal", big: "Big cook" })[effortBucket(mealDifficulty(m))]}</span>`);
     }
     if ((m.rating | 0) > 0) tags.push(`<span class="tag">❤️ Favourite</span>`);
     if ((m.rating | 0) < 0) tags.push(`<span class="tag">👎 Not suggested</span>`);
     const always = alwaysSides(m), maybe = maybeSides(m);
     if (always.length) tags.push(`<span class="tag">With ${escapeHtml(always.join(" & "))}</span>`);
-    if (maybe.length) tags.push(`<span class="tag">${maybe.length} optional side${maybe.length === 1 ? "" : "s"}</span>`);
+    if (maybe.length) tags.push(`<span class="tag">+${maybe.length} extra${maybe.length === 1 ? "" : "s"}</span>`);
     row.innerHTML =
       `<span class="meal-row-name">${escapeHtml(m.name)}</span>` +
       `<span class="meal-row-tags">${tags.join("")}</span>`;
@@ -1955,9 +1855,8 @@ function wireUp() {
   $("week-today").addEventListener("click", () => gotoWeek(mondayOf(new Date())));
 
   // Planner actions (lock / roll)
-  $("btn-roll-empty").addEventListener("click", rollEmptyNights);
-  $("btn-reroll").addEventListener("click", reRollUnlocked);
-  $("btn-clear").addEventListener("click", clearUnlocked);
+  $("btn-suggest").addEventListener("click", suggestWeek);
+  $("btn-start-again").addEventListener("click", startWeekAgain);
 
   // Shopping list — check-off, extras, copy, print
   $("btn-print").addEventListener("click", () => window.print());
@@ -1982,42 +1881,30 @@ function wireUp() {
   });
 
   // Picker — searchable meal dropdown
-  const search = $("pick-search");
-  search.addEventListener("focus", openComboList);
-  search.addEventListener("input", () => { renderComboList(search.value); $("pick-list").hidden = false; });
-  search.addEventListener("blur", () => setTimeout(closeComboList, 120));
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { closeComboList(); return; }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const first = $("pick-list").querySelector(".combo-option");
-      if (first) chooseComboMeal(first.textContent);
-    } else if (e.key === "ArrowDown" && $("pick-list").hidden) {
-      openComboList();
-    }
+  // Night sheet
+  $("modal-close").addEventListener("click", closeNight);
+  $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeNight(); });
+  $("night-swap").addEventListener("click", async () => { if (nightDay) { await swapNight(nightDay); renderNight(); } });
+  $("night-choose").addEventListener("click", () => openChooser("all"));
+  $("night-treat").addEventListener("click", () => openChooser("treat"));
+  $("night-off").addEventListener("click", async () => {
+    if (!nightDay) return;
+    const out = !!(plan.days[nightDay] && plan.days[nightDay].is_out);
+    await setNotCooking(nightDay, !out);
+    if (out) renderNight(); else closeNight();
   });
-  $("pick-save").addEventListener("click", savePicker);
-  $("pick-cancel").addEventListener("click", closePicker);
-  $("modal-close").addEventListener("click", closePicker);
-  $("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closePicker(); });
-  $("pick-random").addEventListener("click", async () => { if (picking) { await fillCell(picking.day, picking.slot, { treat: false }); closePicker(); } });
-  $("pick-treat").addEventListener("click", async () => { if (picking) { await fillCell(picking.day, picking.slot, { treat: true }); closePicker(); } });
-  $("pick-out").addEventListener("click", async () => {
-    if (!picking) return;
-    const note = prompt("Mark this meal as OUT (eating out, skipping, etc.).\n\nAdd a short note (optional):", "");
-    if (note === null) return;
-    await saveEntry(picking.day, picking.slot, { status: "out", meal_name: null, sides: [], note: note.trim() });
-    closePicker(); render();
-  });
-  $("pick-rating").addEventListener("click", (e) => {
+  $("night-clear").addEventListener("click", async () => { if (nightDay) { await clearNight(nightDay); renderNight(); } });
+  $("night-rating").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-rating]");
-    const meal = b && mealByName($("pick-meal").value);
+    const e2 = nightDay && plan.entries[ekey(nightDay, SLOTS[0])];
+    const meal = b && e2 && mealByName(e2.meal_name);
     if (meal) setMealRating(meal, parseInt(b.dataset.rating, 10));
   });
-  $("pick-clear").addEventListener("click", async () => { if (picking) { await deleteEntry(picking.day, picking.slot); closePicker(); render(); } });
+  $("choose-back").addEventListener("click", showNightView);
+  $("choose-search").addEventListener("input", (e) => renderChooseList(e.target.value));
 
-  // Meal editor
   $("btn-add-meal").addEventListener("click", () => openMealEditor(null));
+  $("m-loc").addEventListener("change", syncHomeOnly);
   $("meal-save").addEventListener("click", saveMeal);
   $("meal-cancel").addEventListener("click", closeMealEditor);
   $("meal-modal-close").addEventListener("click", closeMealEditor);
@@ -2026,7 +1913,7 @@ function wireUp() {
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!$("modal").hidden) closePicker();
+    if (!$("modal").hidden) closeNight();
     if (!$("meal-modal").hidden) closeMealEditor();
   });
 }
